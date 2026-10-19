@@ -1,0 +1,21 @@
+[package]
+name = "monitor-sync"
+description = "HTTP client for the sanka-api /monitor/agent surface (enrollment, token, check-in, software)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+chrono = { workspace = true }
+monitor-core = { workspace = true }
+monitor-inventory = { path = "../monitor-inventory" }
+monitor-posture = { path = "../monitor-posture" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }

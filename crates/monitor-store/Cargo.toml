@@ -1,0 +1,17 @@
+[package]
+name = "monitor-store"
+description = "Local event buffering for the Sanka Monitor agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+chrono = { workspace = true }
+monitor-core = { workspace = true }
+rusqlite = { version = "0.32", features = ["bundled", "chrono"] }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

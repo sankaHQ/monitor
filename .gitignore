@@ -1,0 +1,16 @@
+target/
+node_modules/
+dist/
+.DS_Store
+
+# Tauri
+apps/agent/src-tauri/gen/
+
+# Never commit credentials or certificates
+.env
+.env.*
+*.p12
+*.key
+
+# Written by scripts/setup-windows-signing.ps1 in the release job
+apps/agent/src-tauri/tauri.signing.conf.json

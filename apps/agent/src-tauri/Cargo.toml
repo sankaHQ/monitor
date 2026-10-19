@@ -1,0 +1,54 @@
+[package]
+name = "sanka-monitor-agent"
+description = "Sanka Monitor desktop agent"
+# The agent's only version source: tauri.conf.json has none, so the bundle, the
+# updater and the check-in all read this one. Not the workspace version.
+version = "0.3.1"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+chrono = { workspace = true }
+keyring = { version = "3", features = ["apple-native", "windows-native"] }
+monitor-core = { path = "../../../crates/monitor-core" }
+monitor-findings = { path = "../../../crates/monitor-findings" }
+monitor-inventory = { path = "../../../crates/monitor-inventory" }
+monitor-posture = { path = "../../../crates/monitor-posture" }
+monitor-report = { path = "../../../crates/monitor-report" }
+monitor-store = { path = "../../../crates/monitor-store" }
+monitor-sync = { path = "../../../crates/monitor-sync" }
+monitor-usage = { path = "../../../crates/monitor-usage" }
+uuid = { workspace = true }
+# serde/serde_json are also required by tauri::generate_context! expansion
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Already in the build (monitor-inventory): the fingerprint of a report sent to Sanka.
+sha2 = "0.10"
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+# 2.6+ needs tauri 2.12; the workspace is on 2.11.
+tauri-plugin-autostart = "~2.5"
+tauri-plugin-single-instance = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-deep-link = "2"
+tauri-plugin-opener = "2"
+# The save dialog for reports. 2.7 is the newest that runs on tauri 2.11.
+tauri-plugin-dialog = "~2.7"
+# macros is required for tokio::select!; do not rely on workspace feature
+# unification from dev-dependencies — bin-only builds drop it.
+tokio = { version = "1", features = ["macros", "time"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+  "std",
+  "NSWorkspace",
+  "NSRunningApplication",
+] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# AttachConsole: the command-line scan prints to the console it was run from.
+windows-sys = { version = "0.59", features = ["Win32_System_Console"] }

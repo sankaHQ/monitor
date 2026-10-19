@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Menu-bar agent: no Dock icon; the tray menu owns Open / Quit. -->
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Sanka Monitor reads the address of your browser's active tab to recognise the work apps you use. The address stays on this computer.</string>
+</dict>
+</plist>

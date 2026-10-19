@@ -1,0 +1,10 @@
+Sanka Monitor
+Copyright 2026 Sanka
+
+This product includes software developed at Sanka (https://sanka.com/).
+
+The lifecycle catalog in crates/monitor-findings/catalog/ records support dates
+that software vendors publish; each rule names its vendor source. eol-catalog.json
+is a snapshot of https://sanka.com/lab/eol-catalog.json.
+
+Third-party notices are in THIRD_PARTY_NOTICES.md.

@@ -1,0 +1,55 @@
+# On-demand, unsigned Windows installers for the Windows 11 VM pass
+# (docs/windows.md). Not a release: nothing is published, artifacts expire, and
+# the updater is not involved (createUpdaterArtifacts is switched off because
+# no signing key is present here). Signed installers come from release.yml.
+name: Windows test build (unsigned)
+
+on:
+  workflow_dispatch:
+    inputs:
+      note:
+        description: "Label for this build (part of the artifact name)"
+        required: false
+        default: "vm-test"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Unsigned NSIS + MSI
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/agent/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: apps/agent
+
+      - name: Build installers
+        run: npm run tauri build -- --config src-tauri/tauri.unsigned.conf.json
+        working-directory: apps/agent
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: sanka-monitor-windows-unsigned-${{ inputs.note }}-${{ github.sha }}
+          path: |
+            target/release/bundle/nsis/*.exe
+            target/release/bundle/msi/*.msi
+          if-no-files-found: error
+          retention-days: 14

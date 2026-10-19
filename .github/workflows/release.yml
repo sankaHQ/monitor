@@ -1,0 +1,422 @@
+# Sanka Monitor agent releases (README.md#release, docs/windows.md#release): a
+# signed and notarized universal macOS app (Apple silicon + Intel) and an
+# Authenticode-signed Windows installer, published to sankaHQ/monitor-releases as
+# release vX.Y.Z, the latest release. The updater reads latest.json from it.
+# Adapted from Sanka's earlier internal macOS updater workflow; see docs/PROVENANCE.md.
+# Tauri v2 reads the APPLE_* / TAURI_SIGNING_* env vars natively, so the manual
+# keychain and config-override steps from the original are gone. The Windows job
+# and the manifest job follow Sanka Recorder's release workflow.
+name: Release (macOS + Windows)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag for monitor-releases: v + the version in apps/agent/src-tauri/Cargo.toml (for example: v0.1.2)"
+        required: true
+      dry_run:
+        description: "Build, sign, and notarize, but upload artifacts to this run instead of publishing"
+        type: boolean
+        default: true
+      release_notes:
+        description: "Notes shown on the GitHub release and in the updater"
+        required: false
+        default: "Sanka Monitor agent update."
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-monitor
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Check version and secrets
+    runs-on: ubuntu-latest
+    # Named as the Actions secrets, so a missing one is reported by its own name.
+    env:
+      MACOS_APPLE_CERTIFICATE: ${{ secrets.MACOS_APPLE_CERTIFICATE }}
+      MACOS_APPLE_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_APPLE_CERTIFICATE_PASSWORD }}
+      MACOS_APPLE_SIGNING_IDENTITY: ${{ secrets.MACOS_APPLE_SIGNING_IDENTITY }}
+      MACOS_APPLE_ID: ${{ secrets.MACOS_APPLE_ID }}
+      MACOS_APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.MACOS_APPLE_APP_SPECIFIC_PASSWORD }}
+      MACOS_APPLE_TEAM_ID: ${{ secrets.MACOS_APPLE_TEAM_ID }}
+      TAURI_UPDATER_PRIVATE_KEY: ${{ secrets.TAURI_UPDATER_PRIVATE_KEY }}
+      TAURI_UPDATER_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_UPDATER_PRIVATE_KEY_PASSWORD }}
+      MONITOR_AZURE_TENANT_ID: ${{ secrets.MONITOR_AZURE_TENANT_ID }}
+      MONITOR_AZURE_CLIENT_ID: ${{ secrets.MONITOR_AZURE_CLIENT_ID }}
+      MONITOR_AZURE_CLIENT_SECRET: ${{ secrets.MONITOR_AZURE_CLIENT_SECRET }}
+      MONITOR_AZURE_SIGNING_ENDPOINT: ${{ secrets.MONITOR_AZURE_SIGNING_ENDPOINT }}
+      MONITOR_AZURE_SIGNING_ACCOUNT: ${{ secrets.MONITOR_AZURE_SIGNING_ACCOUNT }}
+      MONITOR_AZURE_SIGNING_PROFILE: ${{ secrets.MONITOR_AZURE_SIGNING_PROFILE }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # The updater installs latest.json's version whenever it is newer than
+      # the running build, so a tag above the built version would make every
+      # agent reinstall the same build and restart, over and over.
+      - name: Check the tag matches the agent version
+        env:
+          RELEASE_TAG: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          configured=$(sed -n 's/^version = "\(.*\)"$/\1/p' apps/agent/src-tauri/Cargo.toml | head -1)
+          if [ "v${configured}" != "${RELEASE_TAG}" ]; then
+            echo "apps/agent/src-tauri/Cargo.toml has version ${configured}: release it as v${configured}, not ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+
+      # Every secret both platforms need, checked before either build starts.
+      # A Windows release is always Authenticode-signed: there is no unsigned path.
+      - name: Validate required secrets
+        run: |
+          set -euo pipefail
+          missing=0
+          require() {
+            local purpose=$1
+            shift
+            for key in "$@"; do
+              if [ -z "${!key:-}" ]; then
+                echo "::error::Missing required secret: ${key} (${purpose})"
+                missing=1
+              fi
+            done
+          }
+          require "macOS Developer ID signing and notarization" \
+            MACOS_APPLE_CERTIFICATE MACOS_APPLE_CERTIFICATE_PASSWORD MACOS_APPLE_SIGNING_IDENTITY \
+            MACOS_APPLE_ID MACOS_APPLE_APP_SPECIFIC_PASSWORD MACOS_APPLE_TEAM_ID
+          require "updater signing, macOS and Windows" \
+            TAURI_UPDATER_PRIVATE_KEY TAURI_UPDATER_PRIVATE_KEY_PASSWORD
+          require "Windows Authenticode signing through Microsoft Artifact Signing" \
+            MONITOR_AZURE_TENANT_ID MONITOR_AZURE_CLIENT_ID MONITOR_AZURE_CLIENT_SECRET \
+            MONITOR_AZURE_SIGNING_ENDPOINT MONITOR_AZURE_SIGNING_ACCOUNT MONITOR_AZURE_SIGNING_PROFILE
+          if [ "$missing" -ne 0 ]; then
+            echo "Add the missing Actions secrets to this repository (README.md#release, docs/windows.md#release), then run the release again." >&2
+            exit 1
+          fi
+
+  macos:
+    name: macOS (universal, signed + notarized)
+    needs: preflight
+    runs-on: macos-14
+    env:
+      APPLE_CERTIFICATE: ${{ secrets.MACOS_APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.MACOS_APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.MACOS_APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.MACOS_APPLE_APP_SPECIFIC_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.MACOS_APPLE_TEAM_ID }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_UPDATER_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_UPDATER_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/agent/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: apps/agent
+
+      # One app for Apple silicon and Intel Macs; Tauri signs, notarizes and
+      # staples it, then signs the updater tarball.
+      - name: Build, sign, and notarize
+        run: npm run tauri build -- --target universal-apple-darwin
+        working-directory: apps/agent
+
+      - name: Collect
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import glob
+          import plistlib
+          import shutil
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          bundle = "target/universal-apple-darwin/release/bundle"
+          out = Path("out")
+          out.mkdir(exist_ok=True)
+
+          def one(pattern):
+              matches = glob.glob(pattern)
+              if len(matches) != 1:
+                  sys.exit(f"expected exactly one match for {pattern}, got {matches}")
+              return Path(matches[0])
+
+          app = one(f"{bundle}/macos/*.app")
+          executable = plistlib.loads((app / "Contents/Info.plist").read_bytes())["CFBundleExecutable"]
+          archs = subprocess.run(
+              ["lipo", "-archs", str(app / "Contents/MacOS" / executable)],
+              check=True, capture_output=True, text=True,
+          ).stdout.split()
+          if sorted(archs) != ["arm64", "x86_64"]:
+              sys.exit(f"{app.name} is not universal: {archs}")
+          print(f"{app.name}: {' '.join(archs)}")
+
+          shutil.copy2(one(f"{bundle}/dmg/*.dmg"), out / "monitor.dmg")
+          shutil.copy2(one(f"{bundle}/macos/*.app.tar.gz"), out / "monitor.app.tar.gz")
+          shutil.copy2(one(f"{bundle}/macos/*.app.tar.gz.sig"), out / "monitor.app.tar.gz.sig")
+          print("\n".join(p.name for p in sorted(out.iterdir())))
+          PY
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: monitor-macos
+          path: out/*
+          if-no-files-found: error
+
+  windows:
+    name: Windows (NSIS, Authenticode-signed)
+    needs: preflight
+    runs-on: windows-latest
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_UPDATER_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_UPDATER_PRIVATE_KEY_PASSWORD }}
+      # Microsoft Artifact Signing (Authenticode), publisher Sanka, Inc.
+      AZURE_TENANT_ID: ${{ secrets.MONITOR_AZURE_TENANT_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.MONITOR_AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.MONITOR_AZURE_CLIENT_SECRET }}
+      AZURE_SIGNING_ENDPOINT: ${{ secrets.MONITOR_AZURE_SIGNING_ENDPOINT }}
+      AZURE_SIGNING_ACCOUNT: ${{ secrets.MONITOR_AZURE_SIGNING_ACCOUNT }}
+      AZURE_SIGNING_PROFILE: ${{ secrets.MONITOR_AZURE_SIGNING_PROFILE }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup .NET signing runtime
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Configure Authenticode signing
+        shell: pwsh
+        run: ./scripts/setup-windows-signing.ps1
+
+      - name: Test signing service before building Monitor
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Get-Command '7z.exe' -ErrorAction Stop | Out-Null
+          $probe = Join-Path $env:RUNNER_TEMP 'monitor signing probe'
+          New-Item -ItemType Directory -Force -Path $probe | Out-Null
+          @'
+          <Project Sdk="Microsoft.NET.Sdk">
+            <PropertyGroup>
+              <OutputType>Exe</OutputType>
+              <TargetFramework>net8.0</TargetFramework>
+              <UseAppHost>true</UseAppHost>
+            </PropertyGroup>
+          </Project>
+          '@ | Set-Content -LiteralPath (Join-Path $probe 'MonitorSigningProbe.csproj')
+          Set-Content -LiteralPath (Join-Path $probe 'Program.cs') -Value 'System.Console.WriteLine("Sanka Monitor internal signing check. Not a Monitor release.");'
+          dotnet publish (Join-Path $probe 'MonitorSigningProbe.csproj') --configuration Release --runtime win-x64 --self-contained false --output (Join-Path $probe 'out') --nologo
+          if ($LASTEXITCODE -ne 0) { throw 'Could not build the internal signing probe.' }
+          ./scripts/sign-windows.ps1 -FilePath (Join-Path $probe 'out/MonitorSigningProbe.exe')
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: monitor-release
+          cache-on-failure: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/agent/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: apps/agent
+
+      # NSIS only: the per-user installer is both the download and the update
+      # package. The MSI in tauri.windows.conf.json is for unsigned test builds.
+      - name: Build and sign installer
+        shell: bash
+        run: npm run tauri build -- --config src-tauri/tauri.signing.conf.json --bundles nsis
+        working-directory: apps/agent
+
+      - name: Verify Windows signatures
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installers = @(Get-ChildItem -LiteralPath 'target/release/bundle/nsis' -Filter '*-setup.exe' -File)
+          if ($installers.Count -ne 1) {
+            throw "Expected one Windows installer; found $($installers.Count)."
+          }
+          # Tauri restores the unsigned Cargo binary after bundling. Verify the
+          # actual packaged executable, without installing or launching it.
+          $payload = Join-Path $env:RUNNER_TEMP 'monitor signed payload'
+          & 7z.exe x $installers[0].FullName "-o$payload" -y
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Could not extract the Windows installer for signature verification.'
+          }
+          $applications = @(Get-ChildItem -LiteralPath $payload -Filter 'sanka-monitor-agent.exe' -File -Recurse)
+          if ($applications.Count -ne 1) {
+            throw "Expected one packaged Monitor executable; found $($applications.Count)."
+          }
+          $files = @($applications[0], $installers[0])
+          $results = foreach ($file in $files) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $file.FullName
+            if ($signature.Status -ne 'Valid') {
+              throw "Invalid Authenticode signature on $($file.Name): $($signature.StatusMessage)"
+            }
+            $publisher = $signature.SignerCertificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
+            if ($publisher -cne 'Sanka, Inc.') {
+              throw "Unexpected publisher on $($file.Name): $publisher"
+            }
+            if ($null -eq $signature.TimeStamperCertificate) {
+              throw "Missing timestamp on $($file.Name)."
+            }
+            [ordered]@{
+              file = $file.Name
+              sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
+              status = $signature.Status.ToString()
+              publisher = $publisher
+              subject = $signature.SignerCertificate.Subject
+              thumbprint = $signature.SignerCertificate.Thumbprint
+              certificateExpires = $signature.SignerCertificate.NotAfter.ToUniversalTime().ToString('o')
+              timestampSubject = $signature.TimeStamperCertificate.Subject
+            }
+          }
+          New-Item -ItemType Directory -Force -Path 'out' | Out-Null
+          $results | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath 'out/windows-signatures.json' -Encoding utf8
+          Copy-Item -LiteralPath $applications[0].FullName -Destination 'out/monitor-app.exe'
+          Get-Content -LiteralPath 'out/windows-signatures.json'
+
+      - name: Collect
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          installers=(target/release/bundle/nsis/*-setup.exe)
+          signatures=(target/release/bundle/nsis/*-setup.exe.sig)
+          if [ "${#installers[@]}" -ne 1 ] || [ "${#signatures[@]}" -ne 1 ]; then
+            echo "Expected one installer and one updater signature; found ${#installers[@]} and ${#signatures[@]}." >&2
+            exit 1
+          fi
+          mkdir -p out
+          cp "${installers[0]}" out/monitor-setup.exe
+          cp "${signatures[0]}" out/monitor-setup.exe.sig
+          ls -l out
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: monitor-windows
+          path: out/*
+          if-no-files-found: error
+
+  publish:
+    name: Manifest and publish
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download builds
+        uses: actions/download-artifact@v4
+        with:
+          path: builds
+
+      # One universal tarball serves both Mac architectures; the NSIS installer
+      # is the Windows update package.
+      - name: Name assets and write latest.json
+        env:
+          RELEASE_TAG: ${{ inputs.version }}
+          RELEASE_NOTES: ${{ inputs.release_notes }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import shutil
+          import sys
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          tag = os.environ["RELEASE_TAG"]
+          version = tag.removeprefix("v")
+          base = f"https://github.com/sankaHQ/monitor-releases/releases/download/{tag}"
+          mac, win = Path("builds/monitor-macos"), Path("builds/monitor-windows")
+          out = Path("out")
+          out.mkdir()
+
+          names = {
+              mac / "monitor.dmg": f"sanka-monitor_{version}_universal.dmg",
+              mac / "monitor.app.tar.gz": f"sanka-monitor_{version}_universal.app.tar.gz",
+              mac / "monitor.app.tar.gz.sig": f"sanka-monitor_{version}_universal.app.tar.gz.sig",
+              win / "monitor-setup.exe": f"sanka-monitor_{version}_x64-setup.exe",
+              win / "monitor-setup.exe.sig": f"sanka-monitor_{version}_x64-setup.exe.sig",
+          }
+          for src, name in names.items():
+              if not src.is_file() or src.stat().st_size == 0:
+                  sys.exit(f"missing or empty build output: {src}")
+              shutil.copy2(src, out / name)
+
+          def signature(path):
+              return path.read_text().strip()
+
+          mac_update = {
+              "signature": signature(mac / "monitor.app.tar.gz.sig"),
+              "url": f"{base}/sanka-monitor_{version}_universal.app.tar.gz",
+          }
+          latest = {
+              "version": version,
+              "notes": os.environ.get("RELEASE_NOTES", ""),
+              "pub_date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "platforms": {
+                  "darwin-aarch64": mac_update,
+                  "darwin-x86_64": mac_update,
+                  "windows-x86_64": {
+                      "signature": signature(win / "monitor-setup.exe.sig"),
+                      "url": f"{base}/sanka-monitor_{version}_x64-setup.exe",
+                  },
+              },
+          }
+          (out / "latest.json").write_text(json.dumps(latest, indent=2))
+          print("\n".join(p.name for p in sorted(out.iterdir())))
+          PY
+
+      - name: Upload to this run (dry run)
+        if: ${{ inputs.dry_run }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: sanka-monitor-${{ inputs.version }}
+          path: out/*
+          if-no-files-found: error
+
+      - name: Publish to sankaHQ/monitor-releases
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ secrets.MONITOR_RELEASES_TOKEN }}
+          RELEASE_TAG: ${{ inputs.version }}
+          RELEASE_NOTES: ${{ inputs.release_notes }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "Missing MONITOR_RELEASES_TOKEN (fine-grained PAT with contents:write on sankaHQ/monitor-releases)" >&2
+            exit 1
+          fi
+          repo=sankaHQ/monitor-releases
+          gh release create "$RELEASE_TAG" --repo "$repo" \
+            --title "Sanka Monitor $RELEASE_TAG" --notes "$RELEASE_NOTES" \
+            --latest out/*
+          gh release view "$RELEASE_TAG" --repo "$repo" --json assets --jq '.assets[].name'

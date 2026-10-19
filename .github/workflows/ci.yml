@@ -1,0 +1,128 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    name: Lint, test, build (macOS)
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/agent/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: apps/agent
+
+      # Builds ../dist, which tauri::generate_context! reads at compile time —
+      # must run before any cargo command that compiles the agent crate.
+      - name: Typecheck + build frontend
+        run: npm run build
+        working-directory: apps/agent
+
+      - name: rustfmt
+        run: cargo fmt --all --check
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace
+
+      # Bin-only build: catches features that only resolve via dev-dependency
+      # unification under --all-targets (e.g. tokio "macros").
+      - name: Build agent binary
+        run: cargo build -p sanka-monitor-agent
+
+      # The real collectors and report writers on this runner: the command a
+      # device management tool runs. Writes only to the workspace.
+      - name: Command-line scan (smoke)
+        run: |
+          ./target/debug/sanka-monitor-agent scan --out scan-smoke --format all --lang ja
+          test -s scan-smoke/*.csv && test -s scan-smoke/*.xlsx && test -s scan-smoke/*.html
+
+      - name: Upload scan output
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-smoke-macos-${{ github.sha }}
+          path: scan-smoke/
+          retention-days: 7
+
+  check-windows:
+    name: Lint, test, build (Windows)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/agent/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: apps/agent
+
+      - name: Typecheck + build frontend
+        run: npm run build
+        working-directory: apps/agent
+
+      # The Windows collectors (posture, inventory, usage) compile here, and
+      # the scan smoke below runs them on the runner; real Windows PCs have
+      # not verified their behaviour yet.
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace
+
+      - name: Build agent binary
+        run: cargo build -p sanka-monitor-agent
+
+      # The Windows collectors (PowerShell posture and inventory probes) and the
+      # report writers, run for real on this runner. Not a real Windows PC.
+      - name: Command-line scan (smoke)
+        shell: pwsh
+        run: |
+          ./target/debug/sanka-monitor-agent.exe scan --out scan-smoke --format all --lang ja
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($ext in 'csv', 'xlsx', 'html') {
+            if (-not (Get-ChildItem scan-smoke -Filter "*.$ext" | Where-Object Length -gt 0)) { throw "no $ext report" }
+          }
+
+      - name: Upload scan output
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-smoke-windows-${{ github.sha }}
+          path: scan-smoke/
+          retention-days: 7
+

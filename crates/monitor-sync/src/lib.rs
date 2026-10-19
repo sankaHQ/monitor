@@ -1,0 +1,968 @@
+//! HTTP client for the sanka-api `/api/v2/monitor/agent` surface, and for
+//! `/api/v2/monitor/reports`, where a person sends Sanka one report file.
+//! The agent also reads one list back: who in the workspace opened this
+//! person's app usage, and why (`/agent/person-views`).
+//!
+//! Auth model (mirrors the Chrome-extension surface): a one-time enrollment
+//! code becomes a `device_id` + `device_secret`; the secret is exchanged for a
+//! short-lived Bearer runtime token before each check-in. Every response is
+//! the standard `{success, data, meta}` envelope.
+
+use chrono::{DateTime, NaiveDate, Utc};
+use monitor_core::AGENT_API_BASE_PATH;
+use monitor_inventory::InstalledSoftware;
+use monitor_posture::PostureCheckResult;
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentEndpoint {
+    /// Enrollment code → `device_id` + `device_secret`.
+    Enrollments,
+    /// Device secret → short-lived runtime bearer token.
+    Token,
+    /// Posture snapshot + versions → nudges, config, kill switch, min version.
+    Checkins,
+    /// Batched usage-event ingest (P2; only after the employee opted in).
+    Events,
+    /// The agent's Disconnect: revokes the device and deletes its usage
+    /// records on the server.
+    Revoke,
+    /// Installed-software snapshot. A full snapshot: whatever the device
+    /// reported before and is missing now is marked removed.
+    Software,
+    /// Read-only: each time someone in the workspace opened this person's
+    /// daily app presence, with the reason they gave. Sends nothing.
+    PersonViews,
+}
+
+impl AgentEndpoint {
+    pub fn path(self) -> String {
+        let leaf = match self {
+            AgentEndpoint::Enrollments => "enrollments",
+            AgentEndpoint::Token => "token",
+            AgentEndpoint::Checkins => "checkins",
+            AgentEndpoint::Events => "events",
+            AgentEndpoint::Revoke => "revoke",
+            AgentEndpoint::Software => "software",
+            AgentEndpoint::PersonViews => "person-views",
+        };
+        format!("{AGENT_API_BASE_PATH}/{leaf}")
+    }
+}
+
+/// `/agent/token` answers this once the device was revoked: in the console,
+/// by its own Disconnect, or replaced by a newer enrollment of the machine.
+pub const DEVICE_REVOKED: &str = "MONITOR_DEVICE_REVOKED";
+/// `/agent/token` answers this when no device has this id and secret.
+pub const DEVICE_INVALID: &str = "MONITOR_DEVICE_INVALID";
+
+#[derive(Debug)]
+pub enum SyncError {
+    Http(reqwest::Error),
+    /// The API refused the request. `code` is the envelope's `error.code`
+    /// when the body carried one.
+    Api {
+        status: u16,
+        code: Option<String>,
+        message: String,
+    },
+    Envelope(String),
+}
+
+impl SyncError {
+    pub fn code(&self) -> Option<&str> {
+        match self {
+            SyncError::Api { code, .. } => code.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// The workspace revoked this device or no longer knows it. Neither
+    /// credential works again, so retrying is pointless.
+    pub fn device_gone(&self) -> bool {
+        matches!(self.code(), Some(DEVICE_REVOKED | DEVICE_INVALID))
+    }
+}
+
+impl std::fmt::Display for SyncError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SyncError::Http(err) => write!(f, "network error: {err}"),
+            SyncError::Api {
+                status,
+                code: Some(code),
+                message,
+            } => write!(f, "api error ({status} {code}): {message}"),
+            SyncError::Api {
+                status,
+                code: None,
+                message,
+            } => write!(f, "api error ({status}): {message}"),
+            SyncError::Envelope(message) => write!(f, "unexpected response: {message}"),
+        }
+    }
+}
+
+impl std::error::Error for SyncError {}
+
+impl From<reqwest::Error> for SyncError {
+    fn from(err: reqwest::Error) -> Self {
+        SyncError::Http(err)
+    }
+}
+
+pub type SyncResult<T> = Result<T, SyncError>;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnrollRequest {
+    pub code: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnrollmentData {
+    pub device_id: String,
+    pub device_secret: String,
+    pub workspace_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenRequest {
+    pub device_id: String,
+    pub device_secret: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenData {
+    pub access_token: String,
+    pub expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckinRequest {
+    pub agent_version: String,
+    pub platform: String,
+    pub os_version: String,
+    pub hostname: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub serial_number: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_model: Option<String>,
+    /// Windows `EditionID` (`Professional`, `Enterprise`, `EnterpriseS`, …):
+    /// the workspace picks Windows lifecycle dates by it. macOS has none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub os_edition: Option<String>,
+    pub sharing_consent: String,
+    pub posture: Vec<PostureCheckResult>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventBatchRequest {
+    pub events: Vec<monitor_core::UsageEvent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventBatchData {
+    pub accepted: u32,
+    pub duplicates: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NudgeData {
+    pub id: String,
+    pub title: String,
+    pub body: String,
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckinData {
+    pub kill_switch: bool,
+    pub min_agent_version: String,
+    pub checkin_interval_seconds: u64,
+    pub idle_threshold_seconds: u64,
+    #[serde(default)]
+    pub nudges: Vec<NudgeData>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SoftwareUploadRequest {
+    pub collected_at: DateTime<Utc>,
+    pub items: Vec<InstalledSoftware>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SoftwareUploadData {
+    pub received: u64,
+    pub added: u64,
+    pub changed: u64,
+    pub removed: u64,
+    /// Re-upload an unchanged snapshot after this long.
+    pub upload_interval_seconds: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokeData {
+    pub revoked_at: DateTime<Utc>,
+    pub deleted_usage_events: u64,
+}
+
+/// The most views the agent asks for at once: the latest ones.
+pub const PERSON_VIEWS_LIMIT: u32 = 50;
+
+/// One time someone in the workspace opened this person's daily app
+/// presence: when, which days, who (`None` when the workspace does not name
+/// them) and the reason they gave.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonView {
+    pub viewed_at: DateTime<Utc>,
+    pub from: NaiveDate,
+    pub to: NaiveDate,
+    #[serde(default)]
+    pub viewer_name: Option<String>,
+    pub reason: String,
+}
+
+/// The latest views, newest first, and how many there are in all.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonViewsData {
+    pub views: Vec<PersonView>,
+    pub total: u64,
+}
+
+/// Where "Upload this report to Sanka" sends a report. Public: no account.
+pub const REPORTS_PATH: &str = "/api/v2/monitor/reports";
+
+/// What the person typed alongside a report; every field is optional.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ReportUploadFields {
+    /// The person's Sanka contact.
+    pub rep_email: Option<String>,
+    pub sender_company: Option<String>,
+    pub sender_email: Option<String>,
+    pub note: Option<String>,
+    /// The id the app gave the scan, when the file is a report it saved.
+    pub report_id: Option<String>,
+    pub agent_version: Option<String>,
+}
+
+impl ReportUploadFields {
+    /// The form fields as sent, in order, without the empty ones.
+    pub fn form(&self) -> Vec<(&'static str, &str)> {
+        [
+            ("repEmail", &self.rep_email),
+            ("senderCompany", &self.sender_company),
+            ("senderEmail", &self.sender_email),
+            ("note", &self.note),
+            ("reportId", &self.report_id),
+            ("agentVersion", &self.agent_version),
+        ]
+        .into_iter()
+        .filter_map(|(name, value)| {
+            value
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(|v| (name, v))
+        })
+        .collect()
+    }
+}
+
+/// Sanka's receipt: its own SHA-256 of the bytes it stored.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportReceipt {
+    pub id: String,
+    pub received_at: DateTime<Utc>,
+    pub file_name: String,
+    pub format: String,
+    pub size_bytes: u64,
+    pub sha256: String,
+}
+
+/// A `multipart/form-data` body: the text fields, then the file, byte for
+/// byte. Field values and the file name never contain the boundary's line
+/// breaks or quotes (they are replaced), so a value cannot open a new part.
+pub fn multipart_body(
+    boundary: &str,
+    fields: &[(&str, &str)],
+    file_name: &str,
+    content_type: &str,
+    content: &[u8],
+) -> Vec<u8> {
+    let quoted = |value: &str| value.replace(['"', '\\', '\r', '\n'], "_");
+    let mut body = Vec::with_capacity(content.len() + 512);
+    for (name, value) in fields {
+        body.extend_from_slice(
+            format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n")
+                .as_bytes(),
+        );
+        body.extend_from_slice(value.replace('\r', "").as_bytes());
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{}\"\r\nContent-Type: {content_type}\r\n\r\n",
+            quoted(file_name)
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(content);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    body
+}
+
+#[derive(Debug, Deserialize)]
+struct Envelope<T> {
+    #[serde(default)]
+    success: bool,
+    // Option fields deserialize to None when missing — no `default` attr,
+    // which would force a `T: Default` bound on the generic.
+    data: Option<T>,
+    error: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentClient {
+    base_url: String,
+    http: reqwest::Client,
+}
+
+impl AgentClient {
+    pub fn new(base_url: impl Into<String>, agent_version: &str) -> SyncResult<Self> {
+        let http = reqwest::Client::builder()
+            .user_agent(format!("sanka-monitor-agent/{agent_version}"))
+            .build()?;
+        Ok(Self {
+            base_url: base_url.into().trim_end_matches('/').to_string(),
+            http,
+        })
+    }
+
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    pub async fn enroll(&self, code: &str) -> SyncResult<EnrollmentData> {
+        self.post_json(
+            AgentEndpoint::Enrollments,
+            &EnrollRequest {
+                code: code.to_string(),
+            },
+            None,
+        )
+        .await
+    }
+
+    pub async fn issue_token(&self, device_id: &str, device_secret: &str) -> SyncResult<TokenData> {
+        self.post_json(
+            AgentEndpoint::Token,
+            &TokenRequest {
+                device_id: device_id.to_string(),
+                device_secret: device_secret.to_string(),
+            },
+            None,
+        )
+        .await
+    }
+
+    pub async fn checkin(
+        &self,
+        runtime_token: &str,
+        payload: &CheckinRequest,
+    ) -> SyncResult<CheckinData> {
+        self.post_json(AgentEndpoint::Checkins, payload, Some(runtime_token))
+            .await
+    }
+
+    pub async fn ingest_events(
+        &self,
+        runtime_token: &str,
+        payload: &EventBatchRequest,
+    ) -> SyncResult<EventBatchData> {
+        self.post_json(AgentEndpoint::Events, payload, Some(runtime_token))
+            .await
+    }
+
+    /// Sends the full installed-software snapshot. 403 while the workspace
+    /// has paused the agent.
+    pub async fn upload_software(
+        &self,
+        runtime_token: &str,
+        payload: &SoftwareUploadRequest,
+    ) -> SyncResult<SoftwareUploadData> {
+        self.post_json(AgentEndpoint::Software, payload, Some(runtime_token))
+            .await
+    }
+
+    /// Revokes this device on the server and deletes its usage records there.
+    /// The runtime token dies with the device, so a repeat answers 403 and
+    /// `/agent/token` then answers [`DEVICE_REVOKED`].
+    pub async fn revoke(&self, runtime_token: &str) -> SyncResult<RevokeData> {
+        let url = format!("{}{}", self.base_url, AgentEndpoint::Revoke.path());
+        let response = self
+            .http
+            .post(url)
+            .bearer_auth(runtime_token)
+            .send()
+            .await?;
+        self.parse_envelope(response).await
+    }
+
+    /// Who opened this person's app usage: the latest `limit` views. A GET
+    /// with the runtime token and no body; it works whether or not usage
+    /// sharing is on, so someone who stopped sharing still sees past views.
+    pub async fn person_views(
+        &self,
+        runtime_token: &str,
+        limit: u32,
+    ) -> SyncResult<PersonViewsData> {
+        let response = self
+            .http
+            .get(format!(
+                "{}{}?limit={limit}",
+                self.base_url,
+                AgentEndpoint::PersonViews.path()
+            ))
+            .bearer_auth(runtime_token)
+            .send()
+            .await?;
+        self.parse_envelope(response).await
+    }
+
+    /// Sends one report file, exactly these bytes, to Sanka. No device
+    /// credential: the person sends it, connected or not.
+    pub async fn upload_report(
+        &self,
+        file_name: &str,
+        content_type: &str,
+        content: &[u8],
+        fields: &ReportUploadFields,
+    ) -> SyncResult<ReportReceipt> {
+        let boundary = format!("sanka-monitor-{}", uuid::Uuid::new_v4().simple());
+        let body = multipart_body(&boundary, &fields.form(), file_name, content_type, content);
+        let response = self
+            .http
+            .post(format!("{}{REPORTS_PATH}", self.base_url))
+            .header(
+                reqwest::header::CONTENT_TYPE,
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(body)
+            .send()
+            .await?;
+        self.parse_envelope(response).await
+    }
+
+    async fn post_json<TReq: Serialize + ?Sized, TRes: DeserializeOwned>(
+        &self,
+        endpoint: AgentEndpoint,
+        body: &TReq,
+        bearer: Option<&str>,
+    ) -> SyncResult<TRes> {
+        let url = format!("{}{}", self.base_url, endpoint.path());
+        let mut request = self.http.post(url).json(body);
+        if let Some(token) = bearer {
+            request = request.bearer_auth(token);
+        }
+        let response = request.send().await?;
+        self.parse_envelope(response).await
+    }
+
+    async fn parse_envelope<TRes: DeserializeOwned>(
+        &self,
+        response: reqwest::Response,
+    ) -> SyncResult<TRes> {
+        let status = response.status().as_u16();
+        let text = response.text().await?;
+        decode(status, &text)
+    }
+}
+
+/// Turns a response into its envelope's `data`, or the API's error with the
+/// envelope's `error.code` and `error.message` when it sent them.
+fn decode<TRes: DeserializeOwned>(status: u16, text: &str) -> SyncResult<TRes> {
+    if !(200..300).contains(&status) {
+        let body = serde_json::from_str::<serde_json::Value>(text).ok();
+        let error = body
+            .as_ref()
+            .map(|value| value.get("error").unwrap_or(value));
+        return Err(SyncError::Api {
+            status,
+            code: error.and_then(extract_error_code),
+            message: error
+                .and_then(extract_error_message)
+                .or_else(|| body.as_ref().and_then(extract_error_message))
+                .unwrap_or_else(|| truncate(text, 300)),
+        });
+    }
+    let envelope: Envelope<TRes> = serde_json::from_str(text)
+        .map_err(|err| SyncError::Envelope(format!("{err}: {}", truncate(text, 200))))?;
+    if !envelope.success {
+        let error = envelope.error.as_ref();
+        return Err(SyncError::Api {
+            status,
+            code: error.and_then(extract_error_code),
+            message: error
+                .and_then(extract_error_message)
+                .unwrap_or_else(|| "request was not successful".to_string()),
+        });
+    }
+    envelope
+        .data
+        .ok_or_else(|| SyncError::Envelope("response envelope had no data".to_string()))
+}
+
+fn extract_error_code(value: &serde_json::Value) -> Option<String> {
+    value
+        .get("code")
+        .and_then(|v| v.as_str())
+        .filter(|code| !code.is_empty())
+        .map(|code| code.to_string())
+}
+
+fn extract_error_message(value: &serde_json::Value) -> Option<String> {
+    for key in ["message", "detail", "error"] {
+        if let Some(text) = value.get(key).and_then(|v| v.as_str()) {
+            return Some(text.to_string());
+        }
+    }
+    value.as_str().map(|s| s.to_string())
+}
+
+fn truncate(text: &str, max: usize) -> String {
+    let trimmed = text.trim();
+    if trimmed.len() <= max {
+        trimmed.to_string()
+    } else {
+        let mut end = max;
+        while !trimmed.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}…", &trimmed[..end])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+    use monitor_inventory::SoftwareSource;
+    use monitor_posture::{PostureCheckId, PostureCheckResult};
+
+    #[test]
+    fn endpoints_live_under_the_monitor_agent_namespace() {
+        assert_eq!(
+            AgentEndpoint::Enrollments.path(),
+            "/api/v2/monitor/agent/enrollments"
+        );
+        assert_eq!(AgentEndpoint::Token.path(), "/api/v2/monitor/agent/token");
+        assert_eq!(
+            AgentEndpoint::Checkins.path(),
+            "/api/v2/monitor/agent/checkins"
+        );
+        assert_eq!(AgentEndpoint::Events.path(), "/api/v2/monitor/agent/events");
+        assert_eq!(AgentEndpoint::Revoke.path(), "/api/v2/monitor/agent/revoke");
+        assert_eq!(
+            AgentEndpoint::Software.path(),
+            "/api/v2/monitor/agent/software"
+        );
+        assert_eq!(
+            AgentEndpoint::PersonViews.path(),
+            "/api/v2/monitor/agent/person-views"
+        );
+    }
+
+    #[test]
+    fn requests_serialize_to_the_api_contract() {
+        let at = Utc.with_ymd_and_hms(2026, 9, 1, 3, 0, 0).unwrap();
+        let mac = CheckinRequest {
+            agent_version: "0.1.0".into(),
+            platform: "macos".into(),
+            os_version: "14.6.1".into(),
+            hostname: "adas-macbook-pro".into(),
+            serial_number: Some("C02ZX1ABCD12".into()),
+            device_model: None,
+            os_edition: None,
+            sharing_consent: "opted_out".into(),
+            posture: vec![PostureCheckResult {
+                id: PostureCheckId::Gatekeeper,
+                pass: Some(true),
+                detail: None,
+                collected_at: at,
+            }],
+        };
+        let windows = CheckinRequest {
+            platform: "windows".into(),
+            os_version: "Windows 11 24H2 (26100.4351)".into(),
+            serial_number: None,
+            os_edition: Some("Professional".into()),
+            posture: vec![PostureCheckResult {
+                id: PostureCheckId::LocalAdmin,
+                pass: Some(false),
+                detail: Some("The signed-in user is a local administrator".into()),
+                collected_at: at,
+            }],
+            ..mac.clone()
+        };
+        let item = |source, identifier, name, version, publisher| {
+            InstalledSoftware::new(source, identifier, name, version, publisher).unwrap()
+        };
+        let software = SoftwareUploadRequest {
+            collected_at: at,
+            items: vec![
+                item(
+                    SoftwareSource::MacosApp,
+                    "com.microsoft.Word",
+                    "Microsoft Word",
+                    Some("16.90"),
+                    None,
+                ),
+                item(
+                    SoftwareSource::WindowsRegistry,
+                    "{90160000-0011-0000-1000-0000000FF1CE}",
+                    "Microsoft Office Professional Plus 2016",
+                    None,
+                    Some("Microsoft Corporation"),
+                ),
+                item(
+                    SoftwareSource::WindowsStore,
+                    "Microsoft.WindowsTerminal_8wekyb3d8bbwe",
+                    "Microsoft.WindowsTerminal",
+                    Some("1.21.2911.0"),
+                    Some("Microsoft Corporation"),
+                ),
+            ],
+        };
+        // (request, wire body)
+        for (request, wire) in [
+            (
+                serde_json::to_value(&mac).unwrap(),
+                serde_json::json!({
+                    "agentVersion": "0.1.0",
+                    "platform": "macos",
+                    "osVersion": "14.6.1",
+                    "hostname": "adas-macbook-pro",
+                    "serialNumber": "C02ZX1ABCD12",
+                    "sharingConsent": "opted_out",
+                    "posture": [{
+                        "id": "gatekeeper",
+                        "pass": true,
+                        "collectedAt": "2026-09-01T03:00:00Z"
+                    }]
+                }),
+            ),
+            (
+                serde_json::to_value(&windows).unwrap(),
+                serde_json::json!({
+                    "agentVersion": "0.1.0",
+                    "platform": "windows",
+                    "osVersion": "Windows 11 24H2 (26100.4351)",
+                    "osEdition": "Professional",
+                    "hostname": "adas-macbook-pro",
+                    "sharingConsent": "opted_out",
+                    "posture": [{
+                        "id": "local_admin",
+                        "pass": false,
+                        "detail": "The signed-in user is a local administrator",
+                        "collectedAt": "2026-09-01T03:00:00Z"
+                    }]
+                }),
+            ),
+            (
+                serde_json::to_value(&software).unwrap(),
+                serde_json::json!({
+                    "collectedAt": "2026-09-01T03:00:00Z",
+                    "items": [
+                        {"source": "macos_app", "identifier": "com.microsoft.Word", "name": "Microsoft Word", "version": "16.90", "publisher": null},
+                        {"source": "windows_registry", "identifier": "{90160000-0011-0000-1000-0000000FF1CE}", "name": "Microsoft Office Professional Plus 2016", "version": null, "publisher": "Microsoft Corporation"},
+                        {"source": "windows_store", "identifier": "Microsoft.WindowsTerminal_8wekyb3d8bbwe", "name": "Microsoft.WindowsTerminal", "version": "1.21.2911.0", "publisher": "Microsoft Corporation"}
+                    ]
+                }),
+            ),
+        ] {
+            assert_eq!(request, wire);
+        }
+    }
+
+    #[test]
+    fn api_errors_keep_the_envelope_code() {
+        let envelope = |code: &str, message: &str| {
+            serde_json::json!({
+                "success": false,
+                "data": null,
+                "error": {"code": code, "message": message, "details": null},
+            })
+            .to_string()
+        };
+        // (status, body, code, message, device gone)
+        for (status, body, code, message, gone) in [
+            (
+                401,
+                envelope(DEVICE_REVOKED, "This device was revoked."),
+                Some(DEVICE_REVOKED),
+                "This device was revoked.",
+                true,
+            ),
+            (
+                401,
+                envelope(DEVICE_INVALID, "The agent device credential is invalid."),
+                Some(DEVICE_INVALID),
+                "The agent device credential is invalid.",
+                true,
+            ),
+            (
+                200,
+                envelope(DEVICE_REVOKED, "This device was revoked."),
+                Some(DEVICE_REVOKED),
+                "This device was revoked.",
+                true,
+            ),
+            (
+                403,
+                envelope("MONITOR_AGENT_UPDATE_REQUIRED", "Update the agent."),
+                Some("MONITOR_AGENT_UPDATE_REQUIRED"),
+                "Update the agent.",
+                false,
+            ),
+            (
+                403,
+                r#"{"detail": "Forbidden"}"#.to_string(),
+                None,
+                "Forbidden",
+                false,
+            ),
+            (
+                502,
+                "<html>Bad gateway</html>".to_string(),
+                None,
+                "<html>Bad gateway</html>",
+                false,
+            ),
+        ] {
+            let err = decode::<TokenData>(status, &body).unwrap_err();
+            assert_eq!(err.code(), code, "{body}");
+            assert_eq!(err.device_gone(), gone, "{body}");
+            match err {
+                SyncError::Api {
+                    status: got,
+                    message: got_message,
+                    ..
+                } => assert_eq!((got, got_message.as_str()), (status, message)),
+                other => panic!("not an api error: {other}"),
+            }
+        }
+    }
+
+    #[test]
+    fn answers_decode() {
+        let data: RevokeData = decode(
+            200,
+            r#"{"success": true, "data": {"revokedAt": "2026-10-16T01:00:00Z", "deletedUsageEvents": 42}, "error": null}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            data.revoked_at,
+            Utc.with_ymd_and_hms(2026, 10, 16, 1, 0, 0).unwrap()
+        );
+        assert_eq!(data.deleted_usage_events, 42);
+
+        let software: SoftwareUploadData = decode(
+            200,
+            r#"{"success": true, "data": {"received": 312, "added": 3, "changed": 1, "removed": 2, "uploadIntervalSeconds": 86400}, "error": null}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                software.received,
+                software.added,
+                software.changed,
+                software.removed,
+                software.upload_interval_seconds
+            ),
+            (312, 3, 1, 2, 86400)
+        );
+    }
+
+    #[test]
+    fn person_views_decode() {
+        let data: PersonViewsData = decode(
+            200,
+            r#"{"success": true, "data": {"views": [
+                {"viewedAt": "2026-10-19T05:30:00Z", "from": "2026-10-13", "to": "2026-10-19", "viewerName": "Aiko Tanaka", "reason": "Laptop replacement: checking which apps you use"},
+                {"viewedAt": "2026-10-02T09:15:42.123456+09:00", "from": "2026-10-01", "to": "2026-10-01", "viewerName": null, "reason": "Security review"},
+                {"viewedAt": "2026-09-30T00:00:00+00:00", "from": "2026-09-01", "to": "2026-09-30", "reason": "Audit"}
+            ], "total": 57}, "error": null}"#,
+        )
+        .unwrap();
+        assert_eq!(data.total, 57);
+        assert_eq!(data.views.len(), 3);
+        let first = &data.views[0];
+        assert_eq!(
+            first.viewed_at,
+            Utc.with_ymd_and_hms(2026, 10, 19, 5, 30, 0).unwrap()
+        );
+        assert_eq!(first.from, NaiveDate::from_ymd_opt(2026, 10, 13).unwrap());
+        assert_eq!(first.to, NaiveDate::from_ymd_opt(2026, 10, 19).unwrap());
+        assert_eq!(first.viewer_name.as_deref(), Some("Aiko Tanaka"));
+        assert_eq!(
+            first.reason,
+            "Laptop replacement: checking which apps you use"
+        );
+        // An offset is converted to UTC; a null or missing viewer stays unnamed.
+        assert_eq!(
+            data.views[1].viewed_at.to_rfc3339(),
+            "2026-10-02T00:15:42.123456+00:00"
+        );
+        assert_eq!(data.views[1].viewer_name, None);
+        assert_eq!(data.views[2].viewer_name, None);
+
+        // The window gets the same shape back (camelCase, dates as days).
+        assert_eq!(
+            serde_json::to_value(first).unwrap(),
+            serde_json::json!({
+                "viewedAt": "2026-10-19T05:30:00Z",
+                "from": "2026-10-13",
+                "to": "2026-10-19",
+                "viewerName": "Aiko Tanaka",
+                "reason": "Laptop replacement: checking which apps you use",
+            })
+        );
+
+        let none: PersonViewsData = decode(
+            200,
+            r#"{"success": true, "data": {"views": [], "total": 0}, "error": null}"#,
+        )
+        .unwrap();
+        assert!(none.views.is_empty());
+
+        // A device the workspace revoked or no longer knows answers here too,
+        // and wipes itself as after any other agent call.
+        for code in [DEVICE_REVOKED, DEVICE_INVALID] {
+            let body = serde_json::json!({
+                "success": false,
+                "data": null,
+                "error": {"code": code, "message": "gone", "details": null},
+            })
+            .to_string();
+            assert!(decode::<PersonViewsData>(401, &body)
+                .unwrap_err()
+                .device_gone());
+        }
+        // A day that is not a date is an unexpected response, not a guess.
+        let bad = r#"{"success": true, "data": {"views": [{"viewedAt": "2026-10-19T05:30:00Z", "from": "last week", "to": "2026-10-19", "viewerName": null, "reason": "x"}], "total": 1}, "error": null}"#;
+        assert!(matches!(
+            decode::<PersonViewsData>(200, bad),
+            Err(SyncError::Envelope(_))
+        ));
+    }
+
+    /// The request on the wire: a GET for the latest views with the runtime
+    /// token, and no body.
+    #[tokio::test]
+    async fn person_views_is_a_bearer_get_without_a_body() {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buf = [0u8; 4096];
+            while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = stream.read(&mut buf).unwrap();
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buf[..n]);
+            }
+            let body = r#"{"success":true,"data":{"views":[],"total":0},"error":null}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+            String::from_utf8(request).unwrap()
+        });
+
+        let client = AgentClient::new(format!("{base}/"), "0.3.1").unwrap();
+        let data = client
+            .person_views("runtime-token", PERSON_VIEWS_LIMIT)
+            .await
+            .unwrap();
+        assert_eq!(data.total, 0);
+
+        let request = server.join().unwrap();
+        let lines: Vec<&str> = request.split("\r\n").collect();
+        assert_eq!(
+            lines[0],
+            "GET /api/v2/monitor/agent/person-views?limit=50 HTTP/1.1"
+        );
+        let headers: Vec<String> = lines[1..].iter().map(|l| l.to_ascii_lowercase()).collect();
+        assert!(headers.contains(&"authorization: bearer runtime-token".to_string()));
+        assert!(headers.contains(&"user-agent: sanka-monitor-agent/0.3.1".to_string()));
+        assert!(!headers
+            .iter()
+            .any(|h| h.starts_with("content-length:") || h.starts_with("content-type:")));
+        assert!(request.ends_with("\r\n\r\n"), "no body: {request}");
+    }
+
+    /// What a multipart parser sees: the fields and the file, unchanged,
+    /// even when a value tries to start a part of its own.
+    #[test]
+    fn a_report_body_carries_the_file_byte_for_byte() {
+        let content: Vec<u8> = (0..=255u8).collect();
+        let fields = ReportUploadFields {
+            rep_email: Some(" rep@sanka.com ".into()),
+            note: Some("hi\r\n--b\r\nContent-Disposition: form-data; name=\"x\"".into()),
+            sender_company: Some("   ".into()),
+            ..ReportUploadFields::default()
+        };
+        assert_eq!(
+            fields
+                .form()
+                .iter()
+                .map(|(name, _)| *name)
+                .collect::<Vec<_>>(),
+            ["repEmail", "note"]
+        );
+        let body = multipart_body(
+            "b",
+            &fields.form(),
+            "PC\"1\r\n.xlsx",
+            "application/x",
+            &content,
+        );
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("name=\"repEmail\"\r\n\r\nrep@sanka.com\r\n"));
+        assert!(text.contains("filename=\"PC_1__.xlsx\""));
+        // The note's line breaks lose their CR, so no field line equals a boundary.
+        assert_eq!(text.matches("\r\n--b\r\n").count(), 2);
+        let header = b"Content-Type: application/x\r\n\r\n";
+        let start = body
+            .windows(header.len())
+            .position(|w| w == header)
+            .unwrap()
+            + header.len();
+        let end = body.len() - b"\r\n--b--\r\n".len();
+        assert_eq!(&body[start..end], content.as_slice());
+    }
+}

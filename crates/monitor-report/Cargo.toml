@@ -1,0 +1,23 @@
+[package]
+name = "monitor-report"
+description = "Sanka Monitor's local reports: the IT asset ledger workbook, the CSV and the one-page IT risk report (JA/EN)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+chrono = { workspace = true }
+monitor-findings = { path = "../monitor-findings" }
+monitor-inventory = { path = "../monitor-inventory" }
+monitor-posture = { path = "../monitor-posture" }
+# Writes .xlsx with no Excel and no network (MIT OR Apache-2.0).
+rust_xlsxwriter = { version = "0.100", default-features = false }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+# Reads the workbook back in tests; already in the build through the updater.
+zip = { version = "4", default-features = false, features = ["deflate"] }

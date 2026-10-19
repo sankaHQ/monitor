@@ -1,0 +1,21 @@
+[package]
+name = "monitor-inventory"
+description = "Installed-software inventory for the Sanka Monitor agent (user-level, no admin)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Both already ship in this workspace (plist through tauri, sha2 through
+# Sanka Recorder): pinned to the locked versions so no new third-party code
+# enters the build.
+plist = { version = "=1.10.0", default-features = false }
+sha2 = "0.10"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# For its PowerShell runner (one probe, no console window, a timeout).
+monitor-posture = { path = "../monitor-posture" }
