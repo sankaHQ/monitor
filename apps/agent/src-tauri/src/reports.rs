@@ -223,7 +223,7 @@ pub async fn scan_device(app: AppHandle, lang: Lang) -> Result<ScanView, String>
     let state: State<'_, AgentState> = app.state();
     let _one_scan = state.scan_lock.lock().await;
     let report = crate::checks::scan_now(&app).await?;
-    crate::checks::record_scan(&app, &report, false).await;
+    crate::checks::record_scan(&app, &report).await;
     let view = scan_view(&report, lang);
     *state.last_scan.lock().await = Some(report);
     Ok(view)

@@ -131,15 +131,22 @@ pub fn write(report: &ScanReport, lang: Lang) -> String {
         format!("{}/{}", counts.programs_past_support, counts.programs),
         l.programs_past_support,
     ));
-    html.push_str(&tile(
-        if counts.saas_not_allowed > 0 {
-            "medium"
-        } else {
-            ""
-        },
-        format!("{}/{}", counts.saas_not_allowed, counts.saas),
-        l.saas_not_allowed,
-    ));
+    // "Not allowed" only when a company allowlist judged the SaaS: without
+    // one, or with one that could not be read, the tile counts what was found.
+    let judged = report.saas_check.allowlist.is_some() && !report.saas_check.allowlist_unreadable;
+    html.push_str(&if judged {
+        tile(
+            if counts.saas_not_allowed > 0 {
+                "medium"
+            } else {
+                ""
+            },
+            format!("{}/{}", counts.saas_not_allowed, counts.saas),
+            l.saas_not_allowed,
+        )
+    } else {
+        tile("", counts.saas.to_string(), l.saas_found)
+    });
     html.push_str("</div>");
 
     // Top risks
@@ -244,13 +251,20 @@ pub fn write(report: &ScanReport, lang: Lang) -> String {
         html.push_str("</dl>");
     }
     html.push_str(&format!(
-        "<p class=\"fix\">{} {}: {}</p>",
+        "<p class=\"fix\">{} {}: {}. <span class=\"{}\">{}: {}</span></p>",
         esc(l.saas_note),
         esc(l.browser_check),
         esc(&copy::browser_check(
             report.saas_check.browsers.as_deref(),
             lang
-        ))
+        )),
+        if report.saas_check.allowlist_unreadable {
+            "no"
+        } else {
+            ""
+        },
+        esc(l.allowlist),
+        esc(&copy::allowlist_line(&report.saas_check, lang))
     ));
 
     // Device and checks
@@ -398,6 +412,32 @@ mod tests {
                 assert!(!html.contains(external), "{external}");
             }
         }
+    }
+
+    #[test]
+    fn an_allowlist_that_could_not_be_read_is_said_not_hidden() {
+        let mut report = fixtures::windows_report_with_saas();
+        report.set_allowlist(monitor_saas::SaasCatalog::bundled(), None);
+        report.saas_check.allowlist_unreadable = true;
+        for lang in [Lang::En, Lang::Ja] {
+            let l = copy::labels(lang);
+            let html = write(&report, lang);
+            assert!(
+                html.contains(&esc(&copy::allowlist_line(&report.saas_check, lang))),
+                "{lang:?}"
+            );
+            // The tile counts the SaaS found; it does not claim none is not allowed.
+            assert!(
+                html.contains(&format!("<b>4</b>{}", esc(l.saas_found))),
+                "{lang:?}"
+            );
+            assert!(!html.contains(&esc(l.saas_not_allowed)), "{lang:?}");
+        }
+        // With a list that was read, the tile judges and the note names the list.
+        let judged = fixtures::windows_report_with_saas();
+        let html = write(&judged, Lang::En);
+        assert!(html.contains("<b>2/4</b>SaaS not allowed"));
+        assert!(html.contains("Example K.K."));
     }
 
     #[test]

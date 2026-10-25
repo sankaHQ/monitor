@@ -4,6 +4,12 @@
 //! risk appears that the last scan did not have (a SaaS the company has not
 //! allowed, a check that started failing, software whose support ended).
 //!
+//! Every scan is compared with the last one, whatever ran it: the Scan
+//! button, the scan when the app opens (also at login, with the window
+//! hidden) or a regular check. So a risk that appeared while the app was
+//! closed is nudged at the first scan after it starts, not absorbed into
+//! the baseline. While regular checks are off, scans only move the baseline.
+//!
 //! The app keeps, in `checks.json` in its data folder, only the keys of the
 //! last scan's findings (`saas_not_allowed:chatgpt`) and the nudges not yet
 //! dismissed. Nothing is sent. Turning regular checks on also starts the app
@@ -53,8 +59,8 @@ impl CheckSchedule {
     }
 }
 
-/// A risk a regular check found that the scan before it did not have,
-/// worded in both languages when it was found.
+/// A risk a scan found that the scan before it did not have, worded in both
+/// languages when it was found.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalNudge {
@@ -71,9 +77,22 @@ pub struct LocalNudge {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 struct ChecksState {
-    /// The keys of the last scan's findings.
-    known: BTreeSet<String>,
+    /// The keys of the last scan's findings; `None` before the first scan.
+    known: Option<BTreeSet<String>>,
     nudges: Vec<LocalNudge>,
+}
+
+/// Compares `report` with the baseline and makes it the new baseline. With
+/// `nudge` (regular checks are on), each finding the baseline lacks becomes a
+/// nudge; the first scan only sets the baseline.
+fn remember(checks: &mut ChecksState, report: &ScanReport, nudge: bool) {
+    if let (true, Some(known)) = (nudge, &checks.known) {
+        let fresh = new_nudges(known, report, report.scanned_at);
+        checks.nudges.extend(fresh);
+        let excess = checks.nudges.len().saturating_sub(MAX_NUDGES);
+        checks.nudges.drain(..excess);
+    }
+    checks.known = Some(finding_keys(report));
 }
 
 fn finding_key(finding: &Finding) -> String {
@@ -171,20 +190,14 @@ pub async fn scan_now(app: &AppHandle) -> Result<ScanReport, String> {
     .map_err(|err| format!("the scan stopped: {err}"))
 }
 
-/// Remembers this scan's findings; a regular check also nudges about the
-/// ones the scan before it did not have.
-pub async fn record_scan(app: &AppHandle, report: &ScanReport, regular: bool) {
+/// Compares any scan with the last one and remembers it; while regular
+/// checks are on, what is new becomes a nudge (see the module docs).
+pub async fn record_scan(app: &AppHandle, report: &ScanReport) {
     let state: State<'_, AgentState> = app.state();
+    let nudge = state.config.lock().await.check_schedule.is_some();
     let _one = state.checks_lock.lock().await;
     let mut checks = load(app);
-    if regular {
-        checks
-            .nudges
-            .extend(new_nudges(&checks.known, report, report.scanned_at));
-        let excess = checks.nudges.len().saturating_sub(MAX_NUDGES);
-        checks.nudges.drain(..excess);
-    }
-    checks.known = finding_keys(report);
+    remember(&mut checks, report, nudge);
     let _ = save(app, &checks);
     show_on_tray(app, checks.nudges.len());
 }
@@ -196,11 +209,12 @@ pub async fn forget(app: &AppHandle) {
     let known = state.last_scan.lock().await.as_ref().map(finding_keys);
     let _one = state.checks_lock.lock().await;
     let mut checks = load(app);
-    match known {
-        Some(known) => checks.known = known,
-        None => checks.known.retain(|key| {
+    match (known, checks.known.as_mut()) {
+        (Some(known), _) => checks.known = Some(known),
+        (None, Some(saved)) => saved.retain(|key| {
             !(key.starts_with("saas_not_allowed:") || key.starts_with("ai_not_allowed:"))
         }),
+        (None, None) => {}
     }
     checks.nudges.retain(|nudge| !nudge.saas);
     let _ = save(app, &checks);
@@ -220,7 +234,7 @@ async fn run_regular_check(app: &AppHandle) -> Result<(), String> {
     let state: State<'_, AgentState> = app.state();
     let _one_scan = state.scan_lock.lock().await;
     let report = scan_now(app).await?;
-    record_scan(app, &report, true).await;
+    record_scan(app, &report).await;
     let at = report.scanned_at;
     *state.last_scan.lock().await = Some(report);
     let mut config = state.config.lock().await;
@@ -334,6 +348,42 @@ mod tests {
         assert!(nudges[0].saas);
         assert!(nudges[0].title_en.contains("ChatGPT"));
         assert!(nudges[0].title_ja.contains("ChatGPT"));
+    }
+
+    /// What `checks.json` holds across a restart.
+    fn restart(checks: &ChecksState) -> ChecksState {
+        serde_json::from_slice(&serde_json::to_vec(checks).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn a_risk_that_appeared_while_the_app_was_closed_is_nudged_by_the_next_scan() {
+        let risky = sample_report();
+        let mut clean = risky.clone();
+        clean.set_allowlist(SaasCatalog::bundled(), None);
+        let mut checks = ChecksState::default();
+
+        // The first scan only sets the baseline.
+        remember(&mut checks, &clean, true);
+        assert!(checks.nudges.is_empty());
+
+        // The app quits; ChatGPT appears; the scan when it opens again (at
+        // login, window hidden) nudges about it rather than absorbing it.
+        let mut checks = restart(&checks);
+        remember(&mut checks, &risky, true);
+        assert_eq!(checks.nudges.len(), 1);
+        assert!(checks.nudges[0].title_en.contains("ChatGPT"));
+
+        // The regular check a minute later finds nothing new.
+        let mut checks = restart(&checks);
+        remember(&mut checks, &risky, true);
+        assert_eq!(checks.nudges.len(), 1);
+
+        // With regular checks off, scans only move the baseline.
+        let mut quiet = ChecksState::default();
+        remember(&mut quiet, &clean, false);
+        remember(&mut quiet, &risky, false);
+        assert!(quiet.nudges.is_empty());
+        assert_eq!(quiet.known, Some(finding_keys(&risky)));
     }
 
     /// A Mac with ChatGPT installed and an allowlist that does not allow it.
