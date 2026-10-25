@@ -2410,7 +2410,7 @@ dependencies = [
  "serde",
  "serde_json",
  "uuid",
- "zip 4.6.1",
+ "zip 9.0.5",
 ]
 
 [[package]]
@@ -3607,7 +3607,9 @@ dependencies = [
 name = "sanka-monitor-agent"
 version = "0.3.3"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
+ "getrandom 0.4.3",
  "keyring",
  "monitor-core",
  "monitor-findings",
@@ -3631,6 +3633,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
  "tokio",
+ "url",
  "uuid",
  "windows-sys 0.59.0",
 ]
@@ -6214,10 +6217,8 @@ checksum = "caa8cd6af31c3b31c6631b8f483848b91589021b28fffe50adada48d4f4d2ed1"
 dependencies = [
  "arbitrary",
  "crc32fast",
- "flate2",
  "indexmap 2.14.1",
  "memchr",
- "zopfli",
 ]
 
 [[package]]

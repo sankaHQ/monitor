@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod account;
 mod agent;
 mod checks;
 mod cli;
@@ -14,7 +15,7 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager, RunEvent};
 use tauri_plugin_autostart::MacosLauncher;
 
-fn show_main_window(app: &AppHandle) {
+pub(crate) fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
@@ -34,7 +35,12 @@ fn main() {
     }
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        // First: a second launch (or, on Windows, a sanka-monitor:// link)
+        // goes to the running app.
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            for arg in args.iter().filter(|arg| account::is_deep_link(arg)) {
+                account::handle_deep_link(app, arg);
+            }
             show_main_window(app);
         }))
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -64,9 +70,15 @@ fn main() {
             reports::get_saved_reports,
             reports::reveal_report,
             reports::open_report,
-            reports::prepare_upload,
-            reports::send_upload,
-            reports::cancel_upload,
+            reports::prepare_send,
+            reports::prepare_edited_excel,
+            reports::send_report,
+            reports::cancel_send,
+            account::get_account,
+            account::begin_sign_in,
+            account::finish_sign_in,
+            account::cancel_sign_in,
+            account::sign_out,
             saas::get_saas_settings,
             saas::set_browser_check,
             saas::choose_allowlist,
@@ -140,6 +152,8 @@ fn main() {
             agent::spawn_revoke_loop(handle.clone());
             checks::spawn_schedule_loop(handle.clone());
             updates::spawn_update_loop(handle.clone());
+            // The browser hands a sign-in back through sanka-monitor://.
+            account::register_deep_links(&handle);
 
             // The login item starts the agent in the tray; any other launch,
             // or a device with no connected work to do, opens the window.

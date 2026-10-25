@@ -12,6 +12,9 @@ use uuid::Uuid;
 /// API namespace the agent talks to in sanka-api.
 pub const AGENT_API_BASE_PATH: &str = "/api/v2/monitor/agent";
 
+/// API namespace of the app signed in with a Sanka account to send reports.
+pub const DESKTOP_API_BASE_PATH: &str = "/api/v2/monitor/desktop";
+
 /// Deep-link scheme registered by the desktop app (`sanka-monitor://`).
 pub const DEEP_LINK_SCHEME: &str = "sanka-monitor";
 

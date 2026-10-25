@@ -1,11 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { ConnectPane } from "./ConnectPane";
 import { STRINGS, systemLang } from "./i18n";
 import { PrivacyPane } from "./PrivacyPane";
 import { Nudges, RegularChecks, SaasPane } from "./SaasPane";
 import { ScanPane, SoftwarePane } from "./ScanPane";
-import type { Lang, SaasSettings, SavedReport, ScanView, SentPayload, Status } from "./types";
+import type {
+  Account,
+  Lang,
+  SaasSettings,
+  SavedReport,
+  ScanView,
+  SentPayload,
+  Status,
+} from "./types";
 
 type Tab = "scan" | "software" | "saas" | "connect" | "privacy";
 
@@ -32,6 +41,7 @@ export default function App() {
   const [scan, setScan] = useState<ScanView | null>(null);
   const [scanning, setScanning] = useState(false);
   const [saved, setSaved] = useState<SavedReport[]>([]);
+  const [account, setAccount] = useState<Account | null>(null);
   const [saas, setSaas] = useState<SaasSettings | null>(null);
   // undefined until the settings first load; then the last regular check's
   // time, or null before the first one.
@@ -56,6 +66,19 @@ export default function App() {
     refresh();
     const timer = setInterval(refresh, 30_000);
     return () => clearInterval(timer);
+  }, [refresh]);
+
+  // The account the app sends reports as; a sign-in finishes in the browser.
+  useEffect(() => {
+    invoke<Account>("get_account").then(setAccount).catch(() => {});
+    const unlisten = listen<Account>("account-changed", (event) => {
+      setAccount(event.payload);
+      // The sign-in request is listed in the Privacy pane.
+      refresh();
+    });
+    return () => {
+      unlisten.then((stop) => stop()).catch(() => {});
+    };
   }, [refresh]);
 
   // The scan the app holds, again: after the browser check or the allowlist
@@ -208,6 +231,8 @@ export default function App() {
             onScan={runScan}
             saved={saved}
             onSaved={setSaved}
+            account={account}
+            onAccount={setAccount}
             setError={setError}
           />
           <RegularChecks

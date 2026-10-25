@@ -58,7 +58,7 @@ pub const DEFAULT_API_BASE: &str = "https://api-v2.sanka.com";
 pub const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Passed by the login item: start in the tray without opening the window.
 pub const BACKGROUND_ARG: &str = "--background";
-const KEYRING_SERVICE: &str = "com.sanka.monitor";
+pub(crate) const KEYRING_SERVICE: &str = "com.sanka.monitor";
 const TRANSPARENCY_LIMIT: usize = 20;
 const DEFAULT_CHECKIN_INTERVAL_SECONDS: u64 = 3600;
 /// An unchanged installed-software snapshot is sent again after this long,
@@ -73,10 +73,24 @@ const REVOKE_TIMEOUT: Duration = Duration::from_secs(20);
 /// "Who opened your data" waits this long for the workspace.
 const PERSON_VIEWS_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// The Sanka account the app sends reports as (`account.rs`). The device
+/// secret lives only in the OS keychain; these are the names it shows.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AccountConfig {
+    pub device_id: String,
+    pub user_name: Option<String>,
+    pub user_email: Option<String>,
+    pub workspace_name: Option<String>,
+    pub workspace_code: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AgentConfig {
     pub api_base: Option<String>,
+    /// Where the sign-in page lives (the Monitor host); a developer override.
+    pub app_base: Option<String>,
     pub device_id: Option<String>,
     pub workspace_id: Option<String>,
     pub sharing_consent: bool,
@@ -111,6 +125,9 @@ pub struct AgentConfig {
     /// network request when it is not enrolled. A device setting: it
     /// survives Disconnect.
     pub update_checks_off: bool,
+    /// Signed in with a Sanka account to send reports. Not an enrollment: it
+    /// survives Disconnect, and connecting does not need it.
+    pub account: Option<AccountConfig>,
     /// The person turned on the browser check: scans read this computer's
     /// browser history to find the SaaS in use. Off by default; the
     /// person's setting, so it survives Disconnect.
@@ -125,6 +142,12 @@ impl AgentConfig {
         self.api_base
             .clone()
             .unwrap_or_else(|| DEFAULT_API_BASE.to_string())
+    }
+
+    pub fn app_base(&self) -> String {
+        self.app_base
+            .clone()
+            .unwrap_or_else(|| crate::account::DEFAULT_APP_BASE.to_string())
     }
 
     pub fn enrolled(&self) -> bool {
@@ -203,15 +226,17 @@ impl AgentConfig {
         })
     }
 
-    /// Forgets the enrollment and everything learned under it, keeping only a
-    /// developer API override, the revokes still owed to the server and the
-    /// person's own settings: update checks, the browser check and regular
-    /// checks.
+    /// Forgets the enrollment and everything learned under it, keeping only
+    /// the developer overrides, the revokes still owed to the server, the
+    /// person's own settings (update checks, the browser check and regular
+    /// checks) and the account they send reports as.
     pub fn unenrolled(&self) -> AgentConfig {
         AgentConfig {
             api_base: self.api_base.clone(),
+            app_base: self.app_base.clone(),
             pending_revokes: self.pending_revokes.clone(),
             update_checks_off: self.update_checks_off,
+            account: self.account.clone(),
             browser_saas_check: self.browser_saas_check,
             check_schedule: self.check_schedule,
             last_scheduled_check_at: self.last_scheduled_check_at,
@@ -395,9 +420,16 @@ pub struct AgentState {
     pub saved_reports: Mutex<Vec<crate::reports::SavedReport>>,
     /// One local scan at a time.
     pub scan_lock: Mutex<()>,
-    /// The report the person is about to send to Sanka: read once, shown,
-    /// then sent as these exact bytes.
+    /// The report the person is about to send to Sanka: built or read once,
+    /// shown, then sent as these exact bytes.
     pub pending_upload: Mutex<Option<crate::reports::PendingUpload>>,
+    /// A sign-in the person started that the browser has not answered yet.
+    pub pending_sign_in: Mutex<Option<crate::account::PendingSignIn>>,
+    /// The signed-in app's runtime token and when it expires; refreshed under
+    /// this lock.
+    pub account_token: Mutex<Option<(String, std::time::Instant)>>,
+    /// Why the last sign-in from the browser failed.
+    pub account_error: Mutex<Option<String>>,
     /// When the update check last ran, and why it last failed.
     pub last_update_check_at: Mutex<Option<DateTime<Utc>>>,
     pub update_check_error: Mutex<Option<String>>,
@@ -1630,6 +1662,10 @@ mod tests {
             software_sent_at: Some(Utc::now()),
             software_count: Some(120),
             software_upload_interval_seconds: Some(3600),
+            account: Some(AccountConfig {
+                device_id: "account-1".into(),
+                ..AccountConfig::default()
+            }),
             ..AgentConfig::default()
         };
         let first = enrolled.disconnected();
@@ -1637,9 +1673,14 @@ mod tests {
         assert_eq!(first.api_base(), "https://api.example");
         assert_eq!(first.pending_revokes, ["device-1"]);
         assert_eq!(
+            first.account, enrolled.account,
+            "the account the person sends reports as is not part of the enrollment"
+        );
+        assert_eq!(
             AgentConfig {
                 api_base: None,
                 pending_revokes: Vec::new(),
+                account: None,
                 ..first.clone()
             },
             AgentConfig::default(),

@@ -47,10 +47,7 @@ export type Strings = {
     savedTitle: string;
     open: string;
     showInFolder: string;
-    uploadToSanka: string;
-    uploadTitle: string;
-    uploadIntro: string;
-    chooseFile: string;
+    sendToSanka: string;
   };
   software: {
     empty: string;
@@ -89,19 +86,40 @@ export type Strings = {
     nudgesTitle: string;
     dismiss: string;
   };
-  upload: {
+  send: {
+    title: string;
+    intro: string;
+    signInTitle: string;
+    signInIntro: string;
+    signIn: string;
+    waiting: string;
+    codePlaceholder: string;
+    useCode: string;
+    signingIn: string;
+    signedInAs: (who: string, company: string | null) => string;
+    signOut: string;
+    whatIsSent: string;
+    device: string;
+    risks: string;
+    riskCounts: (high: number, medium: number, low: number) => string;
+    programs: string;
+    programCounts: (past: number, total: number) => string;
+    saas: string;
+    saasCounts: (found: number, notAllowed: number, browserCheck: boolean) => string;
+    scanned: string;
     file: string;
     size: string;
     fingerprint: string;
+    edited: string;
     explain: string;
-    repEmail: string;
-    company: string;
-    senderEmail: string;
     note: string;
     send: string;
     sending: string;
     tryAgain: string;
     cancel: string;
+    sendEdited: string;
+    useScan: string;
+    emailInstead: string;
     received: (fileName: string, size: string, at: string) => string;
     matches: string;
     mismatch: (sha256: string) => string;
@@ -222,15 +240,11 @@ export const STRINGS: Record<Lang, Strings> = {
       save: "Save…",
       saving: "Saving…",
       saveHint:
-        "Reports are written only where you choose, in the language above. To get your risks reviewed, send the Excel file to your Sanka contact, or upload it below.",
+        "Reports are written only where you choose, in the language above. To get your risks reviewed, use Send to Sanka, or email the saved Excel to your Sanka contact.",
       savedTitle: "Saved this session",
       open: "Open",
       showInFolder: "Show in folder",
-      uploadToSanka: "Upload to Sanka…",
-      uploadTitle: "Upload a report to Sanka",
-      uploadIntro:
-        "Only when you choose to: pick a report file (for example the Excel ledger after you filled in users and locations), check it, and send it. Nothing is sent until you press Send.",
-      chooseFile: "Choose a report file…",
+      sendToSanka: "Send to Sanka",
     },
     software: {
       empty: "Scan this computer to list its installed programs.",
@@ -239,24 +253,53 @@ export const STRINGS: Record<Lang, Strings> = {
       footer: (date) =>
         `Support dates checked on ${date}. Programs the catalog does not know show as not assessed.`,
     },
-    upload: {
+    send: {
+      title: "Send to Sanka",
+      intro:
+        "Your Sanka contact reviews the risks with you. Sanka Monitor builds the Excel report from this scan and shows exactly what will be sent; nothing leaves this computer until you press Send.",
+      signInTitle: "Sign in to send",
+      signInIntro:
+        "Sending uses your Sanka account, so the report reaches your Sanka contact with your name and company. Signing in opens your browser: use Google, Microsoft or email, or create a free account. Scanning never needs an account.",
+      signIn: "Sign in with your browser",
+      waiting:
+        "Finish signing in in your browser. If Sanka Monitor does not come back by itself, paste the sign-in code here.",
+      codePlaceholder: "Paste sign-in code",
+      useCode: "Sign in with code",
+      signingIn: "Signing in…",
+      signedInAs: (who, company) => `Signed in as ${who}${company ? ` · ${company}` : ""}`,
+      signOut: "Sign out",
+      whatIsSent: "Sanka receives exactly this, and your note if you add one:",
+      device: "Device",
+      risks: "Risks",
+      riskCounts: (high, medium, low) => `${high} high · ${medium} medium · ${low} low`,
+      programs: "Programs",
+      programCounts: (past, total) => `${past} of ${total} past support`,
+      saas: "SaaS",
+      saasCounts: (found, notAllowed, browserCheck) =>
+        `${found} found (${notAllowed} not allowed)` +
+        (browserCheck
+          ? " · includes each SaaS's last day used and days used in the last 30 (browser check)"
+          : ""),
+      scanned: "Scanned",
       file: "File",
       size: "Size",
       fingerprint: "SHA-256",
+      edited: "An edited workbook: sent byte for byte as you saved it, without counts.",
       explain:
-        "Sanka receives this file, byte for byte, and only the details you add below. Nothing else from this computer is sent. Only Sanka staff can open it, and it is used for the assessment you ask for, never for outreach to other companies.",
-      repEmail: "Your Sanka contact's email (optional)",
-      company: "Company (optional)",
-      senderEmail: "Your email, for a reply (optional)",
+        "Nothing else from this computer is sent. Only Sanka staff can open the report, and it is used for the assessment you ask for, never for outreach to other companies.",
       note: "Note (optional)",
       send: "Send to Sanka",
       sending: "Sending…",
       tryAgain: "Try again",
       cancel: "Cancel",
+      sendEdited: "Send an edited Excel…",
+      useScan: "Send this scan's report instead",
+      emailInstead:
+        "Prefer not to sign in? Save the Excel below and email it to your Sanka contact.",
       received: (fileName, size, at) => `Sanka received ${fileName} (${size}, ${at}).`,
-      matches: "Sanka's fingerprint of the file matches the file you chose, byte for byte.",
+      matches: "Sanka's fingerprint of the file matches the report shown, byte for byte.",
       mismatch: (sha256) =>
-        `Sanka's fingerprint (${sha256}) does not match the file you chose. Send it again or send the file another way.`,
+        `Sanka's fingerprint (${sha256}) does not match the report shown. Send it again, or email the saved Excel to your Sanka contact.`,
       receipt: (id) => `Receipt ${id}. Keep it if you contact Sanka about this report.`,
       done: "Done",
     },
@@ -311,7 +354,7 @@ export const STRINGS: Record<Lang, Strings> = {
       leavesConnected:
         "This computer is connected to a workspace: check-ins send its security checks and installed programs, and app usage only if you opted in. Every request is listed below, exactly as sent.",
       leavesLocal:
-        "Nothing, unless you upload a report to Sanka yourself. Scans and reports stay on this computer. The only automatic network request is the update check below, which downloads the latest version number and sends nothing about this computer.",
+        "Nothing, unless you send a report to Sanka yourself. Scans and reports stay on this computer. You sign in to send in your browser; the app itself then sends Sanka only a one-time sign-in code, its version and whether this is a Mac or a Windows PC. The only automatic network request is the update check below, which downloads the latest version number and sends nothing about this computer.",
       updateChecks:
         "Check for updates automatically (hourly, from github.com/sankaHQ/monitor-releases).",
       lastCheck: (at) => ` Last check: ${at}.`,
@@ -436,15 +479,11 @@ export const STRINGS: Record<Lang, Strings> = {
       save: "保存…",
       saving: "保存中…",
       saveHint:
-        "レポートは指定した場所にだけ、上で選んだ言語で保存します。リスクの確認を依頼するときは、ExcelファイルをSankaの担当者に送るか、下からアップロードしてください。",
+        "レポートは指定した場所にだけ、上で選んだ言語で保存します。リスクの確認を依頼するときは［Sankaに送信］を使うか、保存したExcelをSankaの担当者にメールで送ってください。",
       savedTitle: "このセッションで保存したレポート",
       open: "開く",
       showInFolder: "フォルダーで表示",
-      uploadToSanka: "Sankaにアップロード…",
-      uploadTitle: "レポートをSankaにアップロード",
-      uploadIntro:
-        "送ると決めたときだけ使います。レポートファイル（使用者や設置場所を記入したExcelの台帳など）を選んで内容を確認し、送信します。［送信］を押すまで何も送信しません。",
-      chooseFile: "レポートファイルを選ぶ…",
+      sendToSanka: "Sankaに送信",
     },
     software: {
       empty: "このPCをスキャンすると、インストール済みのソフトウェアが一覧表示されます。",
@@ -453,24 +492,53 @@ export const STRINGS: Record<Lang, Strings> = {
       footer: (date) =>
         `サポート期限の確認日：${date}。カタログにないソフトウェアは未判定と表示されます。`,
     },
-    upload: {
+    send: {
+      title: "Sankaに送信",
+      intro:
+        "Sankaの担当者がリスクを一緒に確認します。Sanka MonitorがこのスキャンからExcelのレポートを作成し、送信する内容をそのまま表示します。［送信］を押すまで、このPCからは何も送信しません。",
+      signInTitle: "サインインして送信",
+      signInIntro:
+        "送信にはSankaのアカウントを使います。レポートは、あなたの名前と会社名でSankaの担当者に届きます。サインインはブラウザーで行います。Google、Microsoft、メールアドレスのいずれかでサインインするか、無料のアカウントを作成してください。スキャンにアカウントは不要です。",
+      signIn: "ブラウザーでサインイン",
+      waiting:
+        "ブラウザーでサインインを完了してください。Sanka Monitorに自動で戻らない場合は、サインインコードをここに貼り付けてください。",
+      codePlaceholder: "サインインコードを貼り付け",
+      useCode: "コードでサインイン",
+      signingIn: "サインイン中…",
+      signedInAs: (who, company) => `${who}${company ? `（${company}）` : ""}としてサインイン中`,
+      signOut: "サインアウト",
+      whatIsSent: "Sankaが受け取るのは、次の内容と、入力した場合はメモだけです。",
+      device: "デバイス",
+      risks: "リスク",
+      riskCounts: (high, medium, low) => `高 ${high}・中 ${medium}・低 ${low}`,
+      programs: "ソフトウェア",
+      programCounts: (past, total) => `${total}件中 ${past}件がサポート終了`,
+      saas: "SaaS",
+      saasCounts: (found, notAllowed, browserCheck) =>
+        `${found}件（未許可 ${notAllowed}件）` +
+        (browserCheck
+          ? "・ブラウザーの確認による、SaaSごとの最終利用日と直近30日の利用日数を含みます"
+          : ""),
+      scanned: "スキャン日時",
       file: "ファイル",
       size: "サイズ",
       fingerprint: "SHA-256",
+      edited: "編集したブックです。保存した内容のまま送信し、件数は送りません。",
       explain:
-        "Sankaが受け取るのは、このファイルそのものと、下に入力した情報だけです。このPCのそれ以外の情報は送信しません。開けるのはSankaの社員だけで、ご依頼いただいたアセスメントのためだけに使い、他社への営業には使いません。",
-      repEmail: "Sankaの担当者のメールアドレス（任意）",
-      company: "会社名（任意）",
-      senderEmail: "返信先のメールアドレス（任意）",
+        "このPCのそれ以外の情報は送信しません。レポートを開けるのはSankaの社員だけで、ご依頼いただいたアセスメントのためだけに使い、他社への営業には使いません。",
       note: "メモ（任意）",
       send: "Sankaに送信",
       sending: "送信中…",
       tryAgain: "もう一度送信",
       cancel: "キャンセル",
+      sendEdited: "編集したExcelを送る…",
+      useScan: "このスキャンのレポートを送る",
+      emailInstead:
+        "サインインしたくない場合は、下でExcelを保存し、Sankaの担当者にメールで送ってください。",
       received: (fileName, size, at) => `Sankaが ${fileName} を受け取りました（${size}、${at}）。`,
-      matches: "Sankaが記録したフィンガープリントは、選んだファイルと完全に一致しています。",
+      matches: "Sankaが記録したフィンガープリントは、表示したレポートと完全に一致しています。",
       mismatch: (sha256) =>
-        `Sankaが記録したフィンガープリント（${sha256}）が、選んだファイルと一致しません。もう一度送信するか、別の方法でファイルを送ってください。`,
+        `Sankaが記録したフィンガープリント（${sha256}）が、表示したレポートと一致しません。もう一度送信するか、保存したExcelをSankaの担当者にメールで送ってください。`,
       receipt: (id) =>
         `受付番号 ${id}。このレポートについてSankaに問い合わせるときにお使いください。`,
       done: "閉じる",
@@ -526,7 +594,7 @@ export const STRINGS: Record<Lang, Strings> = {
       leavesConnected:
         "このPCはワークスペースに接続しています。チェックインでセキュリティチェックとインストール済みのソフトウェアを送信し、アプリの利用データは共有をオンにした場合だけ送信します。送信したリクエストは、下にそのまま表示します。",
       leavesLocal:
-        "Sankaにレポートをアップロードしない限り、ありません。スキャン結果とレポートはこのPCに残ります。自動で行う通信は下のアップデートの確認だけで、最新のバージョン番号を取得し、このPCの情報は送信しません。",
+        "Sankaにレポートを送信しない限り、ありません。スキャン結果とレポートはこのPCに残ります。送信のためのサインインはブラウザーで行い、アプリがSankaに送るのは、ワンタイムのサインインコード、アプリのバージョン、MacかWindowsかの区別だけです。自動で行う通信は下のアップデートの確認だけで、最新のバージョン番号を取得し、このPCの情報は送信しません。",
       updateChecks:
         "アップデートを自動で確認する（1時間ごと、github.com/sankaHQ/monitor-releases から）。",
       lastCheck: (at) => `前回の確認：${at}。`,

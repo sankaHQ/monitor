@@ -12,10 +12,19 @@ local-first:
   chooses. Nothing is uploaded. The only automatic network request is the hourly
   update check, which downloads `latest.json` from the release feed, sends nothing
   about the computer, and can be turned off under Privacy.
-- **Upload this report to Sanka, on the person's word.** The app reads one report
-  file, shows its name, size and SHA-256, and sends exactly those bytes (plus
-  anything the person typed) to `POST /api/v2/monitor/reports`; Sanka's receipt
-  carries its own SHA-256 to compare. The request appears in the Privacy pane.
+- **Send to Sanka, on the person's word.** Sending signs in once with a Sanka
+  account in the system browser (`<app base>/desktop/monitor/connect`, PKCE per
+  RFC 8252, with the code handed back through `sanka-monitor://auth/callback` or
+  pasted). Signing in sends only the one-time code, its verifier, the app version
+  and the platform; the device credential stays in the OS keychain. The app builds
+  the Excel report from the current scan, or takes an edited Sanka Monitor
+  workbook, shows exactly what will be sent (device, risk counts, program counts,
+  file name, size and SHA-256; the file is sent as
+  `sanka-monitor-report_<date-time>.xlsx`, never under the computer's name) and
+  sends those bytes and counts to
+  `POST /api/v2/monitor/desktop/reports` with a one-hour token. Sanka's receipt
+  carries its own SHA-256 to compare, and every request appears in the Privacy
+  pane. Without an account, the person emails the saved Excel instead.
 - **The SaaS the computer uses.** Each scan maps installed desktop apps (Slack,
   Zoom, ChatGPT, …) to their SaaS in the catalog bundled in the app
   (`crates/monitor-saas/catalog/saas.json`: product, vendor, category, AI flag, web
@@ -31,7 +40,7 @@ local-first:
   Optional **regular checks** rescan daily or weekly and nudge in the window and
   the tray when something new appears. The app never sends any of this on its own,
   connected or not; the SaaS list leaves the computer only inside a report the
-  person saves or uploads.
+  person saves or sends.
 - **Fleet scan.** `sanka-monitor-agent scan --out <folder>` writes one CSV per PC
   for device management tools, and the workbooks in `templates/fleet/` merge a
   folder of them with Power Query. See [docs/fleet-scan.md](docs/fleet-scan.md).

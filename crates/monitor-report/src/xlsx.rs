@@ -594,6 +594,38 @@ fn local_time(report: &ScanReport) -> String {
         .to_string()
 }
 
+/// Whether `bytes` is a Sanka Monitor workbook, as the app saved it or after
+/// someone filled it in: a spreadsheet package that Sanka Monitor created, or
+/// one that still has the ledger's device and software sheets (in either
+/// language), which a spreadsheet program keeps when it saves.
+pub fn is_monitor_workbook(bytes: &[u8]) -> bool {
+    use std::io::Read as _;
+    let Ok(mut archive) = zip::ZipArchive::new(std::io::Cursor::new(bytes)) else {
+        return false;
+    };
+    let mut part = |name: &str| -> Option<String> {
+        let file = archive.by_name(name).ok()?;
+        let mut text = String::new();
+        // These parts are small; a larger one is not a ledger's.
+        file.take(1 << 20).read_to_string(&mut text).ok()?;
+        Some(text)
+    };
+    if part("docProps/core.xml")
+        .is_some_and(|core| core.contains("<dc:creator>Sanka Monitor</dc:creator>"))
+    {
+        return true;
+    }
+    let Some(workbook) = part("xl/workbook.xml") else {
+        return false;
+    };
+    [Lang::En, Lang::Ja].into_iter().any(|lang| {
+        let labels = copy::labels(lang);
+        [labels.devices, labels.software]
+            .iter()
+            .all(|sheet| workbook.contains(&format!("name=\"{sheet}\"")))
+    })
+}
+
 fn source_label(source: monitor_inventory::SoftwareSource) -> &'static str {
     match source {
         monitor_inventory::SoftwareSource::MacosApp => "macOS app",
@@ -652,9 +684,34 @@ mod tests {
                 let mut file = archive.by_index(i).unwrap();
                 let mut text = String::new();
                 let _ = file.read_to_string(&mut text);
-                (file.name().to_string(), text)
+                (file.name().unwrap().to_string(), text)
             })
             .collect()
+    }
+
+    /// "Send an edited Excel" takes the ledger, whether the app saved it or
+    /// someone filled it in, and refuses any other workbook or file.
+    #[test]
+    fn only_a_sanka_monitor_ledger_is_a_monitor_workbook() {
+        let report = fixtures::windows_report();
+        for lang in [Lang::En, Lang::Ja] {
+            let saved = write(std::slice::from_ref(&report), lang).unwrap();
+            assert!(is_monitor_workbook(&saved), "{lang:?}");
+        }
+        // Saved again by someone else: another creator, the ledger's sheets kept.
+        let labels = copy::labels(Lang::Ja);
+        let mut edited = Workbook::new();
+        edited.set_properties(&DocProperties::new().set_author("Aiko Tanaka"));
+        edited.add_worksheet().set_name(labels.summary).unwrap();
+        edited.add_worksheet().set_name(labels.devices).unwrap();
+        edited.add_worksheet().set_name(labels.software).unwrap();
+        assert!(is_monitor_workbook(&edited.save_to_buffer().unwrap()));
+
+        let mut other = Workbook::new();
+        other.add_worksheet().set_name(labels.devices).unwrap();
+        assert!(!is_monitor_workbook(&other.save_to_buffer().unwrap()));
+        assert!(!is_monitor_workbook(b"PK\x03\x04 not really a zip"));
+        assert!(!is_monitor_workbook(b"<html>a report</html>"));
     }
 
     #[test]

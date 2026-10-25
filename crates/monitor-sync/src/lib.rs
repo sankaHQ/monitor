@@ -1,15 +1,17 @@
 //! HTTP client for the sanka-api `/api/v2/monitor/agent` surface, and for
-//! `/api/v2/monitor/reports`, where a person sends Sanka one report file.
-//! The agent also reads one list back: who in the workspace opened this
-//! person's app usage, and why (`/agent/person-views`).
+//! `/api/v2/monitor/desktop`, where the app signed in with a Sanka account
+//! sends Sanka one report. The agent also reads one list back: who in the
+//! workspace opened this person's app usage, and why (`/agent/person-views`).
 //!
 //! Auth model (mirrors the Chrome-extension surface): a one-time enrollment
 //! code becomes a `device_id` + `device_secret`; the secret is exchanged for a
-//! short-lived Bearer runtime token before each check-in. Every response is
-//! the standard `{success, data, meta}` envelope.
+//! short-lived Bearer runtime token before each check-in. Signing in to send
+//! works the same way, with a one-time code from the browser plus its PKCE
+//! verifier instead of an enrollment code. Every response is the standard
+//! `{success, data, meta}` envelope.
 
 use chrono::{DateTime, NaiveDate, Utc};
-use monitor_core::AGENT_API_BASE_PATH;
+use monitor_core::{AGENT_API_BASE_PATH, DESKTOP_API_BASE_PATH};
 use monitor_inventory::InstalledSoftware;
 use monitor_posture::PostureCheckResult;
 use serde::de::DeserializeOwned;
@@ -51,11 +53,44 @@ impl AgentEndpoint {
     }
 }
 
+/// The signed-in app's routes (`/api/v2/monitor/desktop/*`): sign-in, tokens,
+/// sending a report as the account, and signing out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DesktopEndpoint {
+    /// One-time code + PKCE verifier → `device_id` + `device_secret`.
+    Devices,
+    /// Device secret → one-hour runtime bearer token.
+    Token,
+    /// Sign out: the credential and every token it holds stop working.
+    Revoke,
+    /// One report, sent as the signed-in account.
+    Reports,
+}
+
+impl DesktopEndpoint {
+    pub fn path(self) -> String {
+        let leaf = match self {
+            DesktopEndpoint::Devices => "devices",
+            DesktopEndpoint::Token => "token",
+            DesktopEndpoint::Revoke => "revoke",
+            DesktopEndpoint::Reports => "reports",
+        };
+        format!("{DESKTOP_API_BASE_PATH}/{leaf}")
+    }
+}
+
 /// `/agent/token` answers this once the device was revoked: in the console,
 /// by its own Disconnect, or replaced by a newer enrollment of the machine.
 pub const DEVICE_REVOKED: &str = "MONITOR_DEVICE_REVOKED";
 /// `/agent/token` answers this when no device has this id and secret.
 pub const DEVICE_INVALID: &str = "MONITOR_DEVICE_INVALID";
+/// `/desktop/devices` answers this for an unknown, expired, used or
+/// mismatched sign-in code.
+pub const DESKTOP_INVALID_GRANT: &str = "MONITOR_DESKTOP_INVALID_GRANT";
+/// The signed-in app's credential no longer works: signed out (here or by
+/// Sanka), or the member left the workspace. Sign in again.
+pub const DESKTOP_DEVICE_REVOKED: &str = "MONITOR_DESKTOP_DEVICE_REVOKED";
+pub const DESKTOP_DEVICE_INVALID: &str = "MONITOR_DESKTOP_DEVICE_INVALID";
 
 #[derive(Debug)]
 pub enum SyncError {
@@ -82,6 +117,20 @@ impl SyncError {
     /// credential works again, so retrying is pointless.
     pub fn device_gone(&self) -> bool {
         matches!(self.code(), Some(DEVICE_REVOKED | DEVICE_INVALID))
+    }
+
+    /// The signed-in app's credential no longer works: sign in again.
+    pub fn signed_out(&self) -> bool {
+        matches!(
+            self.code(),
+            Some(DESKTOP_DEVICE_REVOKED | DESKTOP_DEVICE_INVALID)
+        )
+    }
+
+    /// A runtime token the API did not accept (expired or unknown) while the
+    /// credential itself may still work: ask for a new token and try again.
+    pub fn token_rejected(&self) -> bool {
+        matches!(self, SyncError::Api { status: 401, .. }) && !self.signed_out()
     }
 }
 
@@ -245,30 +294,96 @@ pub struct PersonViewsData {
     pub total: u64,
 }
 
-/// Where "Upload this report to Sanka" sends a report. Public: no account.
-pub const REPORTS_PATH: &str = "/api/v2/monitor/reports";
-
-/// What the person typed alongside a report; every field is optional.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct ReportUploadFields {
-    /// The person's Sanka contact.
-    pub rep_email: Option<String>,
-    pub sender_company: Option<String>,
-    pub sender_email: Option<String>,
-    pub note: Option<String>,
-    /// The id the app gave the scan, when the file is a report it saved.
-    pub report_id: Option<String>,
-    pub agent_version: Option<String>,
+/// `/desktop/devices`: the one-time code the browser handed back and the
+/// verifier only this app knows. Nothing about the computer goes with it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopSignInRequest {
+    pub code: String,
+    pub code_verifier: String,
+    pub platform: String,
+    pub app_version: String,
 }
 
-impl ReportUploadFields {
-    /// The form fields as sent, in order, without the empty ones.
-    pub fn form(&self) -> Vec<(&'static str, &str)> {
-        [
-            ("repEmail", &self.rep_email),
-            ("senderCompany", &self.sender_company),
-            ("senderEmail", &self.sender_email),
+/// The workspace the app sends as: the sender's company.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopWorkspace {
+    pub id: String,
+    #[serde(default)]
+    pub code: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopUser {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub email: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopSignInData {
+    pub device_id: String,
+    pub device_secret: String,
+    pub workspace: DesktopWorkspace,
+    pub user: DesktopUser,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopTokenRequest {
+    pub device_id: String,
+    pub device_secret: String,
+    pub app_version: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopTokenData {
+    pub access_token: String,
+    pub expires_in: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopRevokeData {
+    pub revoked_at: DateTime<Utc>,
+}
+
+/// The counts the app shows beside a report it built from a scan, sent as
+/// they were shown. Company level: no computer names, people or software.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportSummary {
+    pub high: usize,
+    pub medium: usize,
+    pub low: usize,
+    pub programs: usize,
+    pub programs_past_support: usize,
+}
+
+/// What goes with a report besides the file; every field is optional.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ReportSendFields {
+    pub note: Option<String>,
+    /// The id the app gave the scan, for a report it built.
+    pub report_id: Option<String>,
+    pub agent_version: Option<String>,
+    /// Left out for a workbook the person edited: the app cannot vouch for it.
+    pub summary: Option<ReportSummary>,
+}
+
+impl ReportSendFields {
+    /// The form fields as sent, in order, without the empty ones. The counts
+    /// travel as one JSON field.
+    pub fn form(&self) -> Vec<(&'static str, String)> {
+        let text = [
             ("note", &self.note),
             ("reportId", &self.report_id),
             ("agentVersion", &self.agent_version),
@@ -279,9 +394,15 @@ impl ReportUploadFields {
                 .as_deref()
                 .map(str::trim)
                 .filter(|v| !v.is_empty())
-                .map(|v| (name, v))
-        })
-        .collect()
+                .map(|v| (name, v.to_string()))
+        });
+        let summary = self.summary.map(|summary| {
+            (
+                "summary",
+                serde_json::to_string(&summary).expect("counts serialize"),
+            )
+        });
+        text.chain(summary).collect()
     }
 }
 
@@ -302,7 +423,7 @@ pub struct ReportReceipt {
 /// breaks or quotes (they are replaced), so a value cannot open a new part.
 pub fn multipart_body(
     boundary: &str,
-    fields: &[(&str, &str)],
+    fields: &[(&str, String)],
     file_name: &str,
     content_type: &str,
     content: &[u8],
@@ -447,25 +568,76 @@ impl AgentClient {
         self.parse_envelope(response).await
     }
 
-    /// Sends one report file, exactly these bytes, to Sanka. No device
-    /// credential: the person sends it, connected or not.
-    pub async fn upload_report(
+    /// Signs the app in: the browser's one-time code and this app's PKCE
+    /// verifier become a device credential for sending reports.
+    pub async fn desktop_sign_in(
         &self,
+        request: &DesktopSignInRequest,
+    ) -> SyncResult<DesktopSignInData> {
+        self.post_desktop(DesktopEndpoint::Devices, request).await
+    }
+
+    pub async fn desktop_token(
+        &self,
+        request: &DesktopTokenRequest,
+    ) -> SyncResult<DesktopTokenData> {
+        self.post_desktop(DesktopEndpoint::Token, request).await
+    }
+
+    /// Signs the app out on the server: its credential stops working.
+    pub async fn desktop_revoke(&self, runtime_token: &str) -> SyncResult<DesktopRevokeData> {
+        let response = self
+            .http
+            .post(format!(
+                "{}{}",
+                self.base_url,
+                DesktopEndpoint::Revoke.path()
+            ))
+            .bearer_auth(runtime_token)
+            .send()
+            .await?;
+        self.parse_envelope(response).await
+    }
+
+    /// Sends one report, exactly these bytes, to Sanka as the signed-in
+    /// account.
+    pub async fn send_report(
+        &self,
+        runtime_token: &str,
         file_name: &str,
         content_type: &str,
         content: &[u8],
-        fields: &ReportUploadFields,
+        fields: &ReportSendFields,
     ) -> SyncResult<ReportReceipt> {
         let boundary = format!("sanka-monitor-{}", uuid::Uuid::new_v4().simple());
         let body = multipart_body(&boundary, &fields.form(), file_name, content_type, content);
         let response = self
             .http
-            .post(format!("{}{REPORTS_PATH}", self.base_url))
+            .post(format!(
+                "{}{}",
+                self.base_url,
+                DesktopEndpoint::Reports.path()
+            ))
+            .bearer_auth(runtime_token)
             .header(
                 reqwest::header::CONTENT_TYPE,
                 format!("multipart/form-data; boundary={boundary}"),
             )
             .body(body)
+            .send()
+            .await?;
+        self.parse_envelope(response).await
+    }
+
+    async fn post_desktop<TReq: Serialize + ?Sized, TRes: DeserializeOwned>(
+        &self,
+        endpoint: DesktopEndpoint,
+        body: &TReq,
+    ) -> SyncResult<TRes> {
+        let response = self
+            .http
+            .post(format!("{}{}", self.base_url, endpoint.path()))
+            .json(body)
             .send()
             .await?;
         self.parse_envelope(response).await
@@ -930,11 +1102,17 @@ mod tests {
     #[test]
     fn a_report_body_carries_the_file_byte_for_byte() {
         let content: Vec<u8> = (0..=255u8).collect();
-        let fields = ReportUploadFields {
-            rep_email: Some(" rep@sanka.com ".into()),
+        let fields = ReportSendFields {
             note: Some("hi\r\n--b\r\nContent-Disposition: form-data; name=\"x\"".into()),
-            sender_company: Some("   ".into()),
-            ..ReportUploadFields::default()
+            agent_version: Some("   ".into()),
+            summary: Some(ReportSummary {
+                high: 1,
+                medium: 2,
+                low: 3,
+                programs: 40,
+                programs_past_support: 4,
+            }),
+            ..ReportSendFields::default()
         };
         assert_eq!(
             fields
@@ -942,7 +1120,7 @@ mod tests {
                 .iter()
                 .map(|(name, _)| *name)
                 .collect::<Vec<_>>(),
-            ["repEmail", "note"]
+            ["note", "summary"]
         );
         let body = multipart_body(
             "b",
@@ -952,7 +1130,9 @@ mod tests {
             &content,
         );
         let text = String::from_utf8_lossy(&body);
-        assert!(text.contains("name=\"repEmail\"\r\n\r\nrep@sanka.com\r\n"));
+        assert!(text.contains(
+            "name=\"summary\"\r\n\r\n{\"high\":1,\"medium\":2,\"low\":3,\"programs\":40,\"programsPastSupport\":4}\r\n"
+        ));
         assert!(text.contains("filename=\"PC_1__.xlsx\""));
         // The note's line breaks lose their CR, so no field line equals a boundary.
         assert_eq!(text.matches("\r\n--b\r\n").count(), 2);
@@ -964,5 +1144,131 @@ mod tests {
             + header.len();
         let end = body.len() - b"\r\n--b--\r\n".len();
         assert_eq!(&body[start..end], content.as_slice());
+    }
+
+    /// Signing in sends the code, the verifier, the platform and the app
+    /// version: nothing about the computer or its scan.
+    #[test]
+    fn signing_in_sends_nothing_about_the_computer() {
+        let request = DesktopSignInRequest {
+            code: "one-time-code".into(),
+            code_verifier: "verifier".into(),
+            platform: "macos".into(),
+            app_version: "0.4.0".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&request).unwrap(),
+            serde_json::json!({
+                "code": "one-time-code",
+                "codeVerifier": "verifier",
+                "platform": "macos",
+                "appVersion": "0.4.0",
+            })
+        );
+        let signed_in: DesktopSignInData = decode(
+            200,
+            r#"{"success": true, "data": {"deviceId": "d-1", "deviceSecret": "s", "workspace": {"id": "w-1", "code": "12345678", "name": "Acme"}, "user": {"name": "Aiko Tanaka", "email": "aiko@acme.example"}}, "error": null}"#,
+        )
+        .unwrap();
+        assert_eq!(signed_in.workspace.name.as_deref(), Some("Acme"));
+        assert_eq!(signed_in.user.email.as_deref(), Some("aiko@acme.example"));
+    }
+
+    #[test]
+    fn a_rejected_token_is_retried_and_a_revoked_app_signs_in_again() {
+        let error = |status: u16, code: &str| {
+            decode::<DesktopTokenData>(
+                status,
+                &serde_json::json!({
+                    "success": false,
+                    "data": null,
+                    "error": {"code": code, "message": "x", "details": null},
+                })
+                .to_string(),
+            )
+            .unwrap_err()
+        };
+        // (error, sign in again, new token and retry)
+        for (err, signed_out, retry) in [
+            (error(401, DESKTOP_DEVICE_REVOKED), true, false),
+            (error(401, DESKTOP_DEVICE_INVALID), true, false),
+            (error(401, "MONITOR_DESKTOP_TOKEN_EXPIRED"), false, true),
+            (error(401, "MONITOR_DESKTOP_TOKEN_INVALID"), false, true),
+            (error(429, "MONITOR_REPORT_RATE_LIMITED"), false, false),
+            (error(400, DESKTOP_INVALID_GRANT), false, false),
+        ] {
+            assert_eq!(err.signed_out(), signed_out, "{err}");
+            assert_eq!(err.token_rejected(), retry, "{err}");
+        }
+    }
+
+    /// The report on the wire: a multipart POST with the runtime token, the
+    /// file as shown, and Sanka's receipt decoded back.
+    #[tokio::test]
+    async fn a_report_is_a_bearer_multipart_post_with_the_file_as_shown() {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buf = [0u8; 4096];
+            let head_end = loop {
+                let n = stream.read(&mut buf).unwrap();
+                request.extend_from_slice(&buf[..n]);
+                if let Some(at) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break at + 4;
+                }
+            };
+            let head = String::from_utf8_lossy(&request[..head_end]).to_ascii_lowercase();
+            let length: usize = head
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length: "))
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            while request.len() < head_end + length {
+                let n = stream.read(&mut buf).unwrap();
+                request.extend_from_slice(&buf[..n]);
+            }
+            let body = r#"{"success":true,"data":{"id":"r-1","receivedAt":"2026-10-26T01:00:00Z","fileName":"report.xlsx","format":"xlsx","sizeBytes":3,"sha256":"abc"},"error":null}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+            request
+        });
+
+        let client = AgentClient::new(base, "0.4.0").unwrap();
+        let receipt = client
+            .send_report(
+                "runtime-token",
+                "report.xlsx",
+                "application/x",
+                b"PK!",
+                &ReportSendFields {
+                    note: Some("Please call".into()),
+                    ..ReportSendFields::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!((receipt.id.as_str(), receipt.size_bytes), ("r-1", 3));
+
+        let request = server.join().unwrap();
+        let text = String::from_utf8_lossy(&request);
+        let lines: Vec<&str> = text.split("\r\n").collect();
+        assert_eq!(lines[0], "POST /api/v2/monitor/desktop/reports HTTP/1.1");
+        let lower = text.to_ascii_lowercase();
+        assert!(lower.contains("authorization: bearer runtime-token\r\n"));
+        assert!(lower.contains("content-type: multipart/form-data; boundary=sanka-monitor-"));
+        assert!(text.contains("name=\"note\"\r\n\r\nPlease call\r\n"));
+        assert!(
+            text.contains("filename=\"report.xlsx\"\r\nContent-Type: application/x\r\n\r\nPK!\r\n")
+        );
     }
 }
