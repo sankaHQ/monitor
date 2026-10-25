@@ -209,6 +209,16 @@ export function SendPanel({
                   </dd>
                 </div>
                 <div>
+                  <dt>{t.saas}</dt>
+                  <dd>
+                    {t.saasCounts(
+                      preview.scan.saas,
+                      preview.scan.saasNotAllowed,
+                      preview.scan.saasBrowserCheck,
+                    )}
+                  </dd>
+                </div>
+                <div>
                   <dt>{t.scanned}</dt>
                   <dd>{formatTime(preview.scan.scannedAt, lang)}</dd>
                 </div>

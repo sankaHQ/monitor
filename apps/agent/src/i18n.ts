@@ -104,6 +104,8 @@ export type Strings = {
     riskCounts: (high: number, medium: number, low: number) => string;
     programs: string;
     programCounts: (past: number, total: number) => string;
+    saas: string;
+    saasCounts: (found: number, notAllowed: number, browserCheck: boolean) => string;
     scanned: string;
     file: string;
     size: string;
@@ -272,6 +274,12 @@ export const STRINGS: Record<Lang, Strings> = {
       riskCounts: (high, medium, low) => `${high} high · ${medium} medium · ${low} low`,
       programs: "Programs",
       programCounts: (past, total) => `${past} of ${total} past support`,
+      saas: "SaaS",
+      saasCounts: (found, notAllowed, browserCheck) =>
+        `${found} found (${notAllowed} not allowed)` +
+        (browserCheck
+          ? " · includes each SaaS's last day used and days used in the last 30 (browser check)"
+          : ""),
       scanned: "Scanned",
       file: "File",
       size: "Size",
@@ -505,6 +513,12 @@ export const STRINGS: Record<Lang, Strings> = {
       riskCounts: (high, medium, low) => `高 ${high}・中 ${medium}・低 ${low}`,
       programs: "ソフトウェア",
       programCounts: (past, total) => `${total}件中 ${past}件がサポート終了`,
+      saas: "SaaS",
+      saasCounts: (found, notAllowed, browserCheck) =>
+        `${found}件（未許可 ${notAllowed}件）` +
+        (browserCheck
+          ? "・ブラウザーの確認による、SaaSごとの最終利用日と直近30日の利用日数を含みます"
+          : ""),
       scanned: "スキャン日時",
       file: "ファイル",
       size: "サイズ",

@@ -243,6 +243,10 @@ export type SendPreview = {
     osName: string;
     scannedAt: string;
     summary: ReportSummary;
+    saas: number;
+    saasNotAllowed: number;
+    /** The SaaS sheet includes each SaaS's last day used and days used. */
+    saasBrowserCheck: boolean;
   } | null;
 };
 

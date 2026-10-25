@@ -391,6 +391,12 @@ pub struct SendScan {
     pub os_name: String,
     pub scanned_at: DateTime<Utc>,
     pub summary: ReportSummary,
+    /// The workbook's SaaS sheet, as the preview names it: shown, never sent
+    /// as separate fields.
+    pub saas: usize,
+    pub saas_not_allowed: usize,
+    /// The sheet then includes each SaaS's last day used and days used.
+    pub saas_browser_check: bool,
 }
 
 /// Exactly what Send will send.
@@ -481,12 +487,16 @@ pub async fn prepare_send(app: AppHandle, lang: Lang) -> Result<SendPreview, Str
         report_id: Some(report.report_id.clone()),
         summary: Some(summary),
     };
+    let counts = report.counts();
     let scan = SendScan {
         hostname: report.device.hostname.clone(),
         device_model: report.device.device_model.clone(),
         os_name: copy::os_name(&report.device),
         scanned_at: report.scanned_at,
         summary,
+        saas: counts.saas,
+        saas_not_allowed: counts.saas_not_allowed,
+        saas_browser_check: report.saas_check.browsers.is_some(),
     };
     Ok(keep_pending(&state, pending, Some(scan)).await)
 }
