@@ -16,6 +16,22 @@ local-first:
   file, shows its name, size and SHA-256, and sends exactly those bytes (plus
   anything the person typed) to `POST /api/v2/monitor/reports`; Sanka's receipt
   carries its own SHA-256 to compare. The request appears in the Privacy pane.
+- **The SaaS the computer uses.** Each scan maps installed desktop apps (Slack,
+  Zoom, ChatGPT, …) to their SaaS in the catalog bundled in the app
+  (`crates/monitor-saas/catalog/saas.json`: product, vendor, category, AI flag, web
+  hosts, desktop-app identifiers, and the Sanka migration page and connector). The
+  **browser check** is off until the person turns it on: then scans read the Chrome,
+  Edge and Firefox history files on the computer (Safari only where Full Disk
+  Access is already granted; the app never asks for it), match host names against
+  the catalog and keep per SaaS only the last day used and the days used in the
+  last 30. Web addresses, page titles and the rest of the history are not stored,
+  never written to a report and never sent. A **company allowlist** (JSON; chosen in
+  the app, placed by device management, or `--allowlist` on the command line) marks
+  each SaaS allowed or not; SaaS not on it become shadow IT / shadow AI risks.
+  Optional **regular checks** rescan daily or weekly and nudge in the window and
+  the tray when something new appears. The app never sends any of this on its own,
+  connected or not; the SaaS list leaves the computer only inside a report the
+  person saves or uploads.
 - **Fleet scan.** `sanka-monitor-agent scan --out <folder>` writes one CSV per PC
   for device management tools, and the workbooks in `templates/fleet/` merge a
   folder of them with Power Query. See [docs/fleet-scan.md](docs/fleet-scan.md).
@@ -86,6 +102,8 @@ apps/agent/              Monitor: Tauri v2 shell (tray, windows, updater, deep-l
 crates/monitor-core      Shared types, ids, API constants, privacy invariants
 crates/monitor-findings  The bundled lifecycle catalog and the on-device finding rules
 crates/monitor-report    Local reports: IT asset ledger (xlsx), CSV, one-page report (HTML), JA/EN
+crates/monitor-saas      The bundled SaaS catalog, desktop-client mapping, the opt-in browser check,
+                         the company allowlist
 crates/monitor-inventory Installed software (macOS app bundles; Windows Uninstall registry + Store)
 crates/monitor-posture   Posture trait + per-platform checks (macOS, Windows)
 crates/monitor-usage     Focus tracking + idle detection (pure interval state machine)

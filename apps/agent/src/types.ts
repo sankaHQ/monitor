@@ -136,6 +136,67 @@ export type ScanView = {
     supportEndsOn: string | null;
     successor: string | null;
   }[];
+  saas: SaasItem[];
+  saasCheck: {
+    browserCheck: boolean;
+    browsers: BrowserResult[];
+    browserSummary: string;
+    allowlistSummary: string;
+    catalogVerifiedOn: string | null;
+  };
+};
+
+/** A SaaS this computer uses. It carries no web addresses. */
+export type SaasItem = {
+  key: string;
+  product: string;
+  vendor: string;
+  categoryLabel: string;
+  ai: boolean;
+  foundFrom: string;
+  sources: string;
+  allowed: boolean | null;
+  allowedLabel: string;
+  migrationLabel: string;
+  migratable: boolean;
+};
+
+export type BrowserResult = {
+  browser: "chrome" | "edge" | "firefox" | "safari";
+  status: "read" | "not_found" | "needs_full_disk_access" | "unreadable";
+  profiles: number;
+};
+
+export type CheckSchedule = "daily" | "weekly";
+
+/** A risk a regular check found that the scan before it did not have. */
+export type LocalNudge = {
+  id: string;
+  at: string;
+  severity: Severity;
+  saas: boolean;
+  titleEn: string;
+  titleJa: string;
+  fixEn: string;
+  fixJa: string;
+};
+
+export type SaasSettings = {
+  browserCheck: boolean;
+  allowlist: {
+    origin: "command_line" | "machine" | "app" | null;
+    name: string | null;
+    allowed: number;
+    unknown: string[];
+    error: string | null;
+    machinePath: string | null;
+    chosen: boolean;
+    summary: string;
+  };
+  schedule: CheckSchedule | null;
+  lastScheduledCheckAt: string | null;
+  nudges: LocalNudge[];
+  catalogVerifiedOn: string;
 };
 
 export type ReportFormat = "xlsx" | "csv" | "html";

@@ -6,11 +6,14 @@
 //! Encoding: UTF-8 with a byte-order mark (Excel then reads Japanese
 //! correctly), CRLF line ends, RFC 4180 quoting. A text cell that Excel would
 //! read as a formula is prefixed with `'`.
+//!
+//! New columns are only ever added at the end, so a folder that still holds
+//! files from an older version merges by column name.
 
 use crate::copy::{self, Lang};
 use crate::ScanReport;
 
-pub const COLUMNS: [&str; 31] = [
+pub const COLUMNS: [&str; 45] = [
     "record",
     "report_id",
     "scanned_at",
@@ -42,6 +45,20 @@ pub const COLUMNS: [&str; 31] = [
     "title_ja",
     "fix_en",
     "fix_ja",
+    "saas_key",
+    "saas_name",
+    "saas_vendor",
+    "saas_category",
+    "saas_ai",
+    "saas_source",
+    "saas_desktop_apps",
+    "saas_last_used_on",
+    "saas_days_used_30",
+    "saas_allowed",
+    "sanka_migrate_url",
+    "sanka_connector",
+    "browser_check",
+    "allowlist",
 ];
 
 /// The record kinds in the `record` column.
@@ -49,6 +66,7 @@ pub const RECORD_DEVICE: &str = "device";
 pub const RECORD_CHECK: &str = "check";
 pub const RECORD_SOFTWARE: &str = "software";
 pub const RECORD_FINDING: &str = "finding";
+pub const RECORD_SAAS: &str = "saas";
 
 #[derive(Default)]
 struct Row<'a> {
@@ -73,6 +91,7 @@ struct Row<'a> {
     title_ja: String,
     fix_en: String,
     fix_ja: String,
+    saas: Option<&'a monitor_saas::SaasRecord>,
 }
 
 fn snake<T: serde::Serialize>(value: &T) -> String {
@@ -115,7 +134,52 @@ fn neutral_evidence(finding: &monitor_findings::Finding) -> String {
     if !programs.is_empty() {
         parts.push(programs.join(", "));
     }
+    if let Some(saas) = &finding.saas {
+        if !saas.desktop_apps.is_empty() {
+            let apps: Vec<&str> = saas.desktop_apps.iter().map(|a| a.name.as_str()).collect();
+            parts.push(format!("desktop_app: {}", apps.join(", ")));
+        }
+        if let Some(used) = saas.browser {
+            parts.push(format!(
+                "browser: {} ({}/30)",
+                used.last_used_on, used.days_used30
+            ));
+        }
+    }
     parts.join(" · ")
+}
+
+/// The SaaS columns of a record row: everything but the web addresses,
+/// which a record does not have.
+fn saas_cells(record: Option<&monitor_saas::SaasRecord>) -> [String; 12] {
+    let Some(record) = record else {
+        return Default::default();
+    };
+    let source = match (!record.desktop_apps.is_empty(), record.browser.is_some()) {
+        (true, true) => "desktop_app,browser",
+        (true, false) => "desktop_app",
+        (false, _) => "browser",
+    };
+    [
+        record.key.clone(),
+        record.product.clone(),
+        record.vendor.clone(),
+        snake(&record.category),
+        record.ai.to_string(),
+        source.to_string(),
+        record.desktop_app_names().join(", "),
+        record
+            .browser
+            .map(|b| b.last_used_on.to_string())
+            .unwrap_or_default(),
+        record
+            .browser
+            .map(|b| b.days_used30.to_string())
+            .unwrap_or_default(),
+        record.allowed.map(|a| a.to_string()).unwrap_or_default(),
+        copy::saas_migration_url(record, Lang::En).unwrap_or_default(),
+        record.connector.clone().unwrap_or_default(),
+    ]
 }
 
 /// Writes the report as CSV bytes.
@@ -150,9 +214,20 @@ pub fn write(report: &ScanReport) -> Vec<u8> {
         lifecycle_cells(&mut row, record.lifecycle.as_ref());
         rows.push(row);
     }
+    for record in &report.saas {
+        rows.push(Row {
+            record: RECORD_SAAS,
+            saas: Some(record),
+            ..Row::default()
+        });
+    }
     for finding in &report.findings {
         let mut row = Row {
             record: RECORD_FINDING,
+            saas: finding
+                .saas
+                .as_ref()
+                .and_then(|evidence| report.saas.iter().find(|r| r.key == evidence.key)),
             check_id: finding.check.map(|c| snake(&c)).unwrap_or_default(),
             detail: neutral_evidence(finding),
             finding_type: finding.finding_type.as_str().to_string(),
@@ -173,6 +248,21 @@ pub fn write(report: &ScanReport) -> Vec<u8> {
         .catalog_verified_on
         .map(|d| d.to_string())
         .unwrap_or_default();
+    let browser_check = if report.saas_check.browsers.is_some() {
+        "on"
+    } else {
+        "off"
+    };
+    let allowlist = if report.saas_check.allowlist_unreadable {
+        "unreadable".to_string()
+    } else {
+        report
+            .saas_check
+            .allowlist
+            .as_ref()
+            .map(|list| list.name.clone().unwrap_or_else(|| snake(&list.origin)))
+            .unwrap_or_default()
+    };
     let mut out = String::from("\u{feff}");
     push_line(&mut out, COLUMNS.iter().copied());
     for row in rows {
@@ -184,6 +274,7 @@ pub fn write(report: &ScanReport) -> Vec<u8> {
                 String::new()
             }
         };
+        let saas = saas_cells(row.saas);
         let cells = [
             row.record.to_string(),
             report.report_id.clone(),
@@ -216,7 +307,11 @@ pub fn write(report: &ScanReport) -> Vec<u8> {
             row.title_ja,
             row.fix_en,
             row.fix_ja,
-        ];
+        ]
+        .into_iter()
+        .chain(saas)
+        .chain([device_only(browser_check), device_only(&allowlist)])
+        .collect::<Vec<String>>();
         push_line(&mut out, cells.iter().map(String::as_str));
     }
     out.into_bytes()
@@ -316,6 +411,48 @@ mod tests {
             (office[21].as_str(), office[23].as_str()),
             ("high", "ended")
         );
+    }
+
+    #[test]
+    fn each_saas_is_one_row_and_its_finding_names_it() {
+        let report = crate::fixtures::windows_report_with_saas();
+        let text = String::from_utf8(write(&report)).unwrap();
+        let rows = parse(text.trim_start_matches('\u{feff}'));
+        let col = |name: &str| COLUMNS.iter().position(|c| *c == name).unwrap();
+        let saas: Vec<&Vec<String>> = rows.iter().filter(|r| r[0] == RECORD_SAAS).collect();
+        assert_eq!(saas.len(), report.saas.len());
+        let salesforce = saas
+            .iter()
+            .find(|r| r[col("saas_key")] == "salesforce")
+            .unwrap();
+        assert_eq!(salesforce[col("saas_source")], "browser");
+        assert_eq!(salesforce[col("saas_days_used_30")], "14");
+        assert_eq!(salesforce[col("saas_allowed")], "true");
+        assert_eq!(
+            salesforce[col("sanka_migrate_url")],
+            "https://sanka.com/migrate/salesforce/"
+        );
+        assert_eq!(salesforce[col("sanka_connector")], "salesforce");
+        let chatgpt = rows
+            .iter()
+            .find(|r| r[0] == RECORD_FINDING && r[col("finding_type")] == "ai_not_allowed")
+            .unwrap();
+        assert_eq!(chatgpt[col("saas_key")], "chatgpt");
+        assert_eq!(chatgpt[col("area")], "saas");
+        let device = rows.iter().find(|r| r[0] == RECORD_DEVICE).unwrap();
+        assert_eq!(
+            (
+                device[col("browser_check")].as_str(),
+                device[col("allowlist")].as_str()
+            ),
+            ("on", "Example K.K.")
+        );
+        // A SaaS row holds no web address but Sanka's own migration page.
+        assert!(saas
+            .iter()
+            .flat_map(|row| row.iter())
+            .filter(|cell| cell.contains("://"))
+            .all(|cell| cell.starts_with("https://sanka.com/")));
     }
 
     #[test]

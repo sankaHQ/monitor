@@ -3,7 +3,7 @@ section Section1;
 shared FolderPath = "C:\SankaMonitor" meta [IsParameterQuery = true, Type = "Text", IsParameterQueryRequired = true];
 
 shared Records = let
-    Columns = {"record", "report_id", "scanned_at", "hostname", "serial_number", "device_model", "platform", "os_version", "os_edition", "agent_version", "catalog_verified_on", "check_id", "check_pass", "detail", "software_source", "software_identifier", "software_name", "software_version", "software_publisher", "finding_type", "area", "severity", "lifecycle_rule", "lifecycle_status", "support_ends_on", "successor", "source_url", "title_en", "title_ja", "fix_en", "fix_ja"},
+    Columns = {"record", "report_id", "scanned_at", "hostname", "serial_number", "device_model", "platform", "os_version", "os_edition", "agent_version", "catalog_verified_on", "check_id", "check_pass", "detail", "software_source", "software_identifier", "software_name", "software_version", "software_publisher", "finding_type", "area", "severity", "lifecycle_rule", "lifecycle_status", "support_ends_on", "successor", "source_url", "title_en", "title_ja", "fix_en", "fix_ja", "saas_key", "saas_name", "saas_vendor", "saas_category", "saas_ai", "saas_source", "saas_desktop_apps", "saas_last_used_on", "saas_days_used_30", "saas_allowed", "sanka_migrate_url", "sanka_connector", "browser_check", "allowlist"},
     Files = Folder.Files(FolderPath),
     Reports = Table.SelectRows(Files, each Text.Lower([Extension]) = ".csv" and not Text.StartsWith([Name], "~$")),
     Parsed = Table.AddColumn(Reports, "Rows", each
@@ -47,11 +47,20 @@ shared Software = let
 in
     Named;
 
+shared SaaS = let
+    Rows = Table.SelectRows(Records, each [record] = "saas"),
+    Labeled = Table.TransformColumns(Rows, {{"saas_allowed", each if _ = "true" then "許可済み" else if _ = "false" then "未許可" else "許可リストなし", type text}, {"saas_ai", each if _ = "true" then "AI" else "", type text}, {"saas_source", each if _ = "desktop_app" then "デスクトップアプリ" else if _ = "browser" then "ブラウザー" else if _ = "desktop_app,browser" then "デスクトップアプリ、ブラウザー" else "", type text}, {"saas_category", each if _ = "ai" then "AI" else if _ = "chat" then "チャット" else if _ = "meetings" then "会議・動画" else if _ = "suite" then "グループウェア・メール" else if _ = "files" then "ファイル共有" else if _ = "crm" then "CRM・営業" else if _ = "marketing" then "マーケティング" else if _ = "design" then "デザイン・ホワイトボード" else if _ = "support" then "カスタマーサポート" else if _ = "itsm" then "ITサービス・デバイス管理" else if _ = "work" then "プロジェクト・タスク管理" else if _ = "knowledge" then "ドキュメント・ノート" else if _ = "dev" then "開発ツール" else if _ = "cloud" then "クラウド基盤" else if _ = "analytics" then "分析・BI" else if _ = "automation" then "自動化" else if _ = "hr" then "人事・採用" else if _ = "finance" then "会計・経費" else if _ = "erp" then "ERP" else if _ = "esign" then "電子契約" else if _ = "commerce" then "EC" else if _ = "identity" then "認証・ID管理" else if _ = "security" then "セキュリティ" else if _ = "remote" then "リモートアクセス" else "", type text}}),
+    Sorted = Table.Sort(Labeled, {{"saas_name", Order.Ascending}, {"hostname", Order.Ascending}}),
+    Ordered = Table.SelectColumns(Sorted, {"hostname", "saas_name", "saas_vendor", "saas_category", "saas_ai", "saas_source", "saas_desktop_apps", "saas_last_used_on", "saas_days_used_30", "saas_allowed", "sanka_migrate_url", "sanka_connector"}),
+    Named = Table.RenameColumns(Ordered, {{"hostname", "コンピューター名"}, {"saas_name", "SaaS"}, {"saas_vendor", "提供元"}, {"saas_category", "カテゴリ"}, {"saas_ai", "AI"}, {"saas_source", "検出元"}, {"saas_desktop_apps", "デスクトップアプリ"}, {"saas_last_used_on", "最終利用日（ブラウザー）"}, {"saas_days_used_30", "直近30日の利用日数（ブラウザー）"}, {"saas_allowed", "会社の許可"}, {"sanka_migrate_url", "Sankaの移行ページ"}, {"sanka_connector", "Sankaのコネクタ"}})
+in
+    Named;
+
 shared Risks = let
     Rows = Table.SelectRows(Records, each [record] = "finding"),
     Ranked = Table.AddColumn(Rows, "rank", each if [severity] = "high" then 1 else if [severity] = "medium" then 2 else 3, Int64.Type),
     Sorted = Table.Sort(Ranked, {{"rank", Order.Ascending}, {"hostname", Order.Ascending}}),
-    Labeled = Table.TransformColumns(Sorted, {{"severity", each if _ = "high" then "高" else if _ = "medium" then "中" else if _ = "low" then "低" else "", type text}, {"area", each if _ = "device" then "デバイス" else if _ = "software" then "ソフトウェア" else "", type text}}),
+    Labeled = Table.TransformColumns(Sorted, {{"severity", each if _ = "high" then "高" else if _ = "medium" then "中" else if _ = "low" then "低" else "", type text}, {"area", each if _ = "device" then "デバイス" else if _ = "software" then "ソフトウェア" else if _ = "saas" then "SaaS" else "", type text}}),
     Ordered = Table.SelectColumns(Labeled, {"severity", "area", "title_ja", "hostname", "detail", "fix_ja", "support_ends_on", "source_url"}),
     Named = Table.RenameColumns(Ordered, {{"severity", "重要度"}, {"area", "対象"}, {"title_ja", "リスク"}, {"hostname", "コンピューター名"}, {"detail", "根拠"}, {"fix_ja", "対処方法"}, {"support_ends_on", "サポート最終日"}, {"source_url", "提供元の情報"}})
 in

@@ -7,7 +7,7 @@ reads a folder of per-PC CSV files (written by `sanka-monitor-agent scan
 
 writes, next to this script (or to --out):
 - sanka-monitor-fleet-en.xlsx and sanka-monitor-fleet-ja.xlsx: the
-  templates (How to use, Devices, Software, Risks, Checks);
+  templates (How to use, Devices, Software, SaaS, Risks, Checks);
 - fleet-queries-en.m and fleet-queries-ja.m: the same Power Query code as
   text, for anyone who prefers to build the queries by hand.
 
@@ -44,7 +44,37 @@ CSV_COLUMNS = [
     "software_name", "software_version", "software_publisher", "finding_type", "area",
     "severity", "lifecycle_rule", "lifecycle_status", "support_ends_on", "successor",
     "source_url", "title_en", "title_ja", "fix_en", "fix_ja",
+    "saas_key", "saas_name", "saas_vendor", "saas_category", "saas_ai", "saas_source",
+    "saas_desktop_apps", "saas_last_used_on", "saas_days_used_30", "saas_allowed",
+    "sanka_migrate_url", "sanka_connector", "browser_check", "allowlist",
 ]
+
+# The SaaS catalog's categories (monitor-saas `Category`), as the reports name them.
+CATEGORIES = {
+    "en": {
+        "ai": "AI", "chat": "Chat", "meetings": "Meetings and video",
+        "suite": "Office suite and email", "files": "File sharing", "crm": "CRM and sales",
+        "marketing": "Marketing", "design": "Design and whiteboards",
+        "support": "Customer support", "itsm": "IT service and device management",
+        "work": "Project and work management", "knowledge": "Docs and notes",
+        "dev": "Developer tools", "cloud": "Cloud platforms", "analytics": "Analytics and BI",
+        "automation": "Automation", "hr": "HR and recruiting",
+        "finance": "Accounting and expenses", "erp": "ERP", "esign": "E-signature",
+        "commerce": "E-commerce", "identity": "Sign-in and identity", "security": "Security",
+        "remote": "Remote access",
+    },
+    "ja": {
+        "ai": "AI", "chat": "チャット", "meetings": "会議・動画",
+        "suite": "グループウェア・メール", "files": "ファイル共有", "crm": "CRM・営業",
+        "marketing": "マーケティング", "design": "デザイン・ホワイトボード",
+        "support": "カスタマーサポート", "itsm": "ITサービス・デバイス管理",
+        "work": "プロジェクト・タスク管理", "knowledge": "ドキュメント・ノート",
+        "dev": "開発ツール", "cloud": "クラウド基盤", "analytics": "分析・BI",
+        "automation": "自動化", "hr": "人事・採用", "finance": "会計・経費", "erp": "ERP",
+        "esign": "電子契約", "commerce": "EC", "identity": "認証・ID管理",
+        "security": "セキュリティ", "remote": "リモートアクセス",
+    },
+}
 
 CHECK_IDS = [
     "disk_encryption", "firewall", "antivirus", "screen_lock", "os_update",
@@ -56,11 +86,13 @@ TEXT = {
     "en": {
         "pass": "Pass", "fail": "Fail", "unknown": "Unknown",
         "high": "High", "medium": "Medium", "low": "Low",
-        "area_device": "Device", "area_software": "Software",
+        "area_device": "Device", "area_software": "Software", "area_saas": "SaaS",
         "ended": "Support ended", "ending": "Support ending soon",
         "supported": "Supported", "not_assessed": "Not assessed",
+        "allowed": "Allowed", "not_allowed": "Not allowed", "no_list": "No company list",
+        "desktop_app": "Desktop app", "browser": "Browser", "both": "Desktop app and browser",
         "title": "title_en", "fix": "fix_en",
-        "sheets": ["How to use", "Devices", "Software", "Risks", "Checks"],
+        "sheets": ["How to use", "Devices", "Software", "SaaS", "Risks", "Checks"],
         "devices": [
             ("hostname", "Computer name"), ("serial_number", "Serial number"),
             ("device_model", "Model"), ("os_version", "OS"), ("os_edition", "Edition"),
@@ -80,6 +112,14 @@ TEXT = {
             ("lifecycle_status", "Support status"), ("support_ends_on", "Last day of support"),
             ("successor", "Recommended action"), ("software_source", "Type"),
             ("software_identifier", "Identifier"), ("source_url", "Vendor source"),
+        ],
+        "saas": [
+            ("hostname", "Computer name"), ("saas_name", "SaaS"), ("saas_vendor", "Vendor"),
+            ("saas_category", "Category"), ("saas_ai", "AI"), ("saas_source", "Found from"),
+            ("saas_desktop_apps", "Desktop app"), ("saas_last_used_on", "Last used (browser)"),
+            ("saas_days_used_30", "Days used in the last 30 (browser)"),
+            ("saas_allowed", "Company allows it"), ("sanka_migrate_url", "Sanka migration page"),
+            ("sanka_connector", "Sanka connector"),
         ],
         "risks": [
             ("severity", "Severity"), ("area", "Area"), ("title", "Risk"),
@@ -102,7 +142,8 @@ TEXT = {
             "If Excel shows a security bar saying external data connections are disabled, click Enable Content first.",
             "On a Mac, type the folder as a path such as /Users/you/SankaMonitor/. Excel asks once for access to it: click Select..., then Grant Access.",
             "",
-            "Devices, Software, Risks and Checks fill from the folder. A PC appears once: a new scan replaces its file.",
+            "Devices, Software, SaaS, Risks and Checks fill from the folder. A PC appears once: a new scan replaces its file.",
+            "SaaS come from each PC's installed desktop apps. With a company allowlist (sanka-monitor-agent scan --allowlist <file>), SaaS that are not on it are listed as risks.",
             "Nothing in this workbook connects to Sanka. If Excel asks about privacy levels, choose Organizational for the folder.",
             "To get your risks reviewed, send this workbook to your Sanka contact.",
         ],
@@ -110,11 +151,13 @@ TEXT = {
     "ja": {
         "pass": "合格", "fail": "不合格", "unknown": "判定不可",
         "high": "高", "medium": "中", "low": "低",
-        "area_device": "デバイス", "area_software": "ソフトウェア",
+        "area_device": "デバイス", "area_software": "ソフトウェア", "area_saas": "SaaS",
         "ended": "サポート終了", "ending": "サポート終了間近",
         "supported": "サポート中", "not_assessed": "未判定",
+        "allowed": "許可済み", "not_allowed": "未許可", "no_list": "許可リストなし",
+        "desktop_app": "デスクトップアプリ", "browser": "ブラウザー", "both": "デスクトップアプリ、ブラウザー",
         "title": "title_ja", "fix": "fix_ja",
-        "sheets": ["使い方", "端末台帳", "ソフトウェア台帳", "リスク一覧", "セキュリティチェック"],
+        "sheets": ["使い方", "端末台帳", "ソフトウェア台帳", "SaaS台帳", "リスク一覧", "セキュリティチェック"],
         "devices": [
             ("hostname", "コンピューター名"), ("serial_number", "シリアル番号"),
             ("device_model", "機種"), ("os_version", "OS"), ("os_edition", "エディション"),
@@ -134,6 +177,14 @@ TEXT = {
             ("lifecycle_status", "サポート状況"), ("support_ends_on", "サポート最終日"),
             ("successor", "推奨する対応"), ("software_source", "種別"),
             ("software_identifier", "識別子"), ("source_url", "提供元の情報"),
+        ],
+        "saas": [
+            ("hostname", "コンピューター名"), ("saas_name", "SaaS"), ("saas_vendor", "提供元"),
+            ("saas_category", "カテゴリ"), ("saas_ai", "AI"), ("saas_source", "検出元"),
+            ("saas_desktop_apps", "デスクトップアプリ"), ("saas_last_used_on", "最終利用日（ブラウザー）"),
+            ("saas_days_used_30", "直近30日の利用日数（ブラウザー）"),
+            ("saas_allowed", "会社の許可"), ("sanka_migrate_url", "Sankaの移行ページ"),
+            ("sanka_connector", "Sankaのコネクタ"),
         ],
         "risks": [
             ("severity", "重要度"), ("area", "対象"), ("title", "リスク"),
@@ -156,7 +207,8 @@ TEXT = {
             "「外部データ接続が無効になっています」というセキュリティの警告が表示されたら、先に [コンテンツの有効化] をクリックしてください。",
             "Mac では、フォルダーを /Users/ユーザー名/SankaMonitor/ のようなパスで入力します。初回だけフォルダーへのアクセス許可を求められるので、[選択...] をクリックしてから [アクセス権を付与] をクリックしてください。",
             "",
-            "端末台帳、ソフトウェア台帳、リスク一覧、セキュリティチェックにフォルダーの内容が反映されます。同じ PC は 1 行です（新しいスキャンでファイルが置き換わります）。",
+            "端末台帳、ソフトウェア台帳、SaaS台帳、リスク一覧、セキュリティチェックにフォルダーの内容が反映されます。同じ PC は 1 行です（新しいスキャンでファイルが置き換わります）。",
+            "SaaS は各 PC のインストール済みデスクトップアプリから検出します。会社の許可リストを指定すると（sanka-monitor-agent scan --allowlist <ファイル>）、一覧にない SaaS をリスクとして表示します。",
             "このブックは Sanka に接続しません。プライバシー レベルを尋ねられたら、フォルダーに [組織] を選んでください。",
             "リスクの確認を依頼するときは、このブックを Sanka の担当者に送ってください。",
         ],
@@ -239,11 +291,20 @@ shared Software = let
 in
     Named;
 
+shared SaaS = let
+    Rows = Table.SelectRows(Records, each [record] = "saas"),
+    Labeled = Table.TransformColumns(Rows, {{{m_label("saas_allowed", {"true": t["allowed"], "false": t["not_allowed"]}, t["no_list"])}, {m_label("saas_ai", {"true": "AI"}, "")}, {m_label("saas_source", {"desktop_app": t["desktop_app"], "browser": t["browser"], "desktop_app,browser": t["both"]}, "")}, {m_label("saas_category", CATEGORIES[lang], "")}}}),
+    Sorted = Table.Sort(Labeled, {{{{"saas_name", Order.Ascending}}, {{"hostname", Order.Ascending}}}}),
+    Ordered = Table.SelectColumns(Sorted, {m_list([src for src, _ in t["saas"]])}),
+    Named = Table.RenameColumns(Ordered, {m_renames(t["saas"], t)})
+in
+    Named;
+
 shared Risks = let
     Rows = Table.SelectRows(Records, each [record] = "finding"),
     Ranked = Table.AddColumn(Rows, "rank", each if [severity] = "high" then 1 else if [severity] = "medium" then 2 else 3, Int64.Type),
     Sorted = Table.Sort(Ranked, {{{{"rank", Order.Ascending}}, {{"hostname", Order.Ascending}}}}),
-    Labeled = Table.TransformColumns(Sorted, {{{m_label("severity", severity, "")}, {m_label("area", {"device": t["area_device"], "software": t["area_software"]}, "")}}}),
+    Labeled = Table.TransformColumns(Sorted, {{{m_label("severity", severity, "")}, {m_label("area", {"device": t["area_device"], "software": t["area_software"], "saas": t["area_saas"]}, "")}}}),
     Ordered = Table.SelectColumns(Labeled, {m_list([title if s == "title" else fix if s == "fix" else s for s, _ in t["risks"]])}),
     Named = Table.RenameColumns(Ordered, {m_renames(t["risks"], t)})
 in
@@ -405,6 +466,7 @@ def build(lang: str, folder: str = DEFAULT_FOLDER) -> tuple[bytes, str]:
     tables = [
         ("Devices", [h for _, h in t["devices"]], [18, 14, 16, 30, 12, 14, 14, 6, 6, 6] + [12] * 11 + [20, 12]),
         ("Software", [h for _, h in t["software"]], [18, 40, 16, 26, 16, 14, 34, 14, 30, 30]),
+        ("SaaS", [h for _, h in t["saas"]], [18, 30, 18, 22, 6, 18, 26, 14, 12, 14, 40, 16]),
         ("Risks", [h for _, h in t["risks"]], [8, 10, 44, 18, 44, 56, 14, 30]),
         ("Checks", [h for _, h in t["checks"]], [18, 20, 10, 50, 20]),
     ]

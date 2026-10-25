@@ -20,6 +20,7 @@ monitor-findings = { path = "../../../crates/monitor-findings" }
 monitor-inventory = { path = "../../../crates/monitor-inventory" }
 monitor-posture = { path = "../../../crates/monitor-posture" }
 monitor-report = { path = "../../../crates/monitor-report" }
+monitor-saas = { path = "../../../crates/monitor-saas" }
 monitor-store = { path = "../../../crates/monitor-store" }
 monitor-sync = { path = "../../../crates/monitor-sync" }
 monitor-usage = { path = "../../../crates/monitor-usage" }

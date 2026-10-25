@@ -14,7 +14,14 @@ export type Strings = {
   themes: Record<Theme, string>;
   headerLocal: string;
   headerConnected: (paused: boolean) => string;
-  tabs: { scan: string; software: string; connect: string; workspace: string; privacy: string };
+  tabs: {
+    scan: string;
+    software: string;
+    saas: string;
+    connect: string;
+    workspace: string;
+    privacy: string;
+  };
   scan: {
     scanNow: string;
     scanAgain: string;
@@ -52,6 +59,37 @@ export type Strings = {
     onlyFlagged: (count: number) => string;
     nothing: string;
     footer: (date: string) => string;
+  };
+  saas: {
+    intro: string;
+    empty: string;
+    browserTitle: string;
+    browserCheck: string;
+    browserExplain: string;
+    thisScan: (summary: string) => string;
+    safariHint: string;
+    allowlistTitle: string;
+    allowlistExplain: string;
+    machinePath: (path: string) => string;
+    machineInUse: string;
+    chooseFile: string;
+    stopUsing: string;
+    allowlistError: (error: string) => string;
+    listTitle: string;
+    none: string;
+    onlyNotAllowed: (count: number) => string;
+    migrationPage: string;
+    footer: (date: string) => string;
+  };
+  checks: {
+    title: string;
+    regular: string;
+    regularHint: string;
+    daily: string;
+    weekly: string;
+    last: (at: string) => string;
+    nudgesTitle: string;
+    dismiss: string;
   };
   upload: {
     file: string;
@@ -150,6 +188,7 @@ export const STRINGS: Record<Lang, Strings> = {
     tabs: {
       scan: "Scan",
       software: "Software",
+      saas: "SaaS",
       connect: "Connect",
       workspace: "Workspace",
       privacy: "Privacy",
@@ -177,7 +216,10 @@ export const STRINGS: Record<Lang, Strings> = {
       saveTitle: "Save a report",
       reportLanguage: "Report language",
       formats: {
-        xlsx: { label: "Excel (IT asset ledger)", hint: "Devices, software, risks and checks" },
+        xlsx: {
+          label: "Excel (IT asset ledger)",
+          hint: "Devices, software, SaaS, risks and checks",
+        },
         html: { label: "One-page report", hint: "Opens in a browser; print it to PDF" },
         csv: { label: "CSV", hint: "One row per record, for merging" },
       },
@@ -296,10 +338,12 @@ export const STRINGS: Record<Lang, Strings> = {
         "Security settings: disk encryption, firewall, Gatekeeper or SmartScreen, screen lock, OS updates, automatic updates, antivirus, admin rights, device management, Secure Boot or System Integrity Protection",
         "Installed apps and programs: name, version and publisher",
         "Device identity: model, OS version and edition, computer name, serial number",
+        "Only if you turn on the browser check: your browsers' history on this computer, to find the business SaaS you use (see \"Browser check\")",
       ],
       neverTitle: "Never collected",
       never: [
-        "Window titles, URLs, or document names",
+        "Window titles or document names",
+        "Web addresses, page titles or browsing history: even with the browser check on, they are never stored, written to a report or sent",
         "Screen contents, screenshots, or recordings",
         "Keystrokes or clipboard contents",
         "Where programs are installed, or the files on this device",
@@ -308,6 +352,44 @@ export const STRINGS: Record<Lang, Strings> = {
       sentTitle: "Exactly what this app sent",
       nothingSent: "Nothing sent yet.",
       deliveryUnconfirmed: " · delivery unconfirmed",
+    },
+    saas: {
+      intro:
+        "The SaaS this computer uses: from its installed desktop apps, which needs no permission, and from the browser check if you turn it on. Nothing leaves this computer.",
+      empty: "Scan this computer first.",
+      browserTitle: "Browser check",
+      browserCheck: "Check my browsers' history on this PC to list the SaaS I use",
+      browserExplain:
+        "Off unless you turn it on. When it is on, each scan reads the history of Chrome, Edge and Firefox on this computer, and Safari's only if this Mac already gives Sanka Monitor Full Disk Access (the app never asks for it). It matches each site's name against Sanka Monitor's list of business SaaS. For each SaaS it finds, it keeps only the last day you used it and on how many of the last 30 days. Web addresses, page titles and the rest of your history are not stored, are never written to a report and never leave this computer. Reports you save include the SaaS list with those two values. Turning this off deletes the results.",
+      thisScan: (summary) => `This scan: ${summary}`,
+      safariHint:
+        "macOS lets an app read Safari's history only with Full Disk Access. Sanka Monitor does not ask for it, because that permission opens every file on this Mac.",
+      allowlistTitle: "Company allowlist",
+      allowlistExplain:
+        "Your IT team can list the SaaS the company allows in a file, placed on this computer by device management or chosen here. SaaS in use that are not on the list appear as risks.",
+      machinePath: (path) => `Device management places the company's file at ${path}.`,
+      machineInUse: "Your company's file, placed by device management, is in use.",
+      chooseFile: "Choose a file…",
+      stopUsing: "Stop using this file",
+      allowlistError: (error) => `The allowlist could not be read, so no SaaS is judged: ${error}`,
+      listTitle: "SaaS found",
+      none: "No SaaS in Sanka Monitor's catalog was found on this computer.",
+      onlyNotAllowed: (count) => `Only SaaS not allowed (${count})`,
+      migrationPage: "Sanka migration",
+      footer: (date) =>
+        `SaaS catalog checked on ${date}. Only business SaaS in the catalog are matched; a site it does not list is never recorded.`,
+    },
+    checks: {
+      title: "Regular checks",
+      regular:
+        "Scan this computer regularly and tell me in Sanka Monitor when a SaaS my company has not allowed, or a new risk, appears.",
+      regularHint:
+        "Sanka Monitor then starts at login and stays in the menu bar (on Windows, the notification area). Nothing is sent.",
+      daily: "Every day",
+      weekly: "Every week",
+      last: (at) => `Last regular check: ${at}`,
+      nudgesTitle: "New since the last scan",
+      dismiss: "Dismiss",
     },
   },
   ja: {
@@ -322,6 +404,7 @@ export const STRINGS: Record<Lang, Strings> = {
     tabs: {
       scan: "スキャン",
       software: "ソフトウェア",
+      saas: "SaaS",
       connect: "接続",
       workspace: "ワークスペース",
       privacy: "プライバシー",
@@ -351,7 +434,7 @@ export const STRINGS: Record<Lang, Strings> = {
       formats: {
         xlsx: {
           label: "Excel（IT資産台帳）",
-          hint: "デバイス、ソフトウェア、リスク、チェック結果",
+          hint: "デバイス、ソフトウェア、SaaS、リスク、チェック結果",
         },
         html: { label: "1ページのレポート", hint: "ブラウザーで開き、PDFとして印刷できます" },
         csv: { label: "CSV", hint: "1行1レコード。複数のPCをまとめるときに使います" },
@@ -473,10 +556,12 @@ export const STRINGS: Record<Lang, Strings> = {
         "セキュリティ設定：ディスク暗号化、ファイアウォール、Gatekeeper または SmartScreen、画面ロック、OSアップデート、自動アップデート、ウイルス対策、管理者権限、デバイス管理、セキュアブートまたはシステム整合性保護",
         "インストール済みのアプリとソフトウェア：名前、バージョン、提供元",
         "デバイスの情報：機種、OSのバージョンとエディション、コンピューター名、シリアル番号",
+        "ブラウザーの確認をオンにした場合のみ：使っているビジネスSaaSを見つけるための、このPCのブラウザーの閲覧履歴（「ブラウザーの確認」を参照）",
       ],
       neverTitle: "収集しない情報",
       never: [
-        "ウィンドウタイトル、URL、ドキュメント名",
+        "ウィンドウタイトル、ドキュメント名",
+        "URL、ページのタイトル、閲覧履歴（ブラウザーの確認をオンにしても、保存、レポートへの記載、送信はしません）",
         "画面の内容、スクリーンショット、録画",
         "キー入力、クリップボードの内容",
         "ソフトウェアのインストール先、このPC内のファイル",
@@ -485,6 +570,44 @@ export const STRINGS: Record<Lang, Strings> = {
       sentTitle: "このアプリが送信した内容",
       nothingSent: "まだ何も送信していません。",
       deliveryUnconfirmed: " · 配信未確認",
+    },
+    saas: {
+      intro:
+        "このPCで使っているSaaSです。インストール済みのデスクトップアプリ（許可は不要です）と、オンにした場合はブラウザーの確認から見つけます。データはこのPCの外に出ません。",
+      empty: "先にこのPCをスキャンしてください。",
+      browserTitle: "ブラウザーの確認",
+      browserCheck: "このPCのブラウザーの閲覧履歴から、使っているSaaSを確認する",
+      browserExplain:
+        "オンにしない限り行いません。オンにすると、スキャンのたびにこのPCのChrome、Edge、Firefoxの閲覧履歴を読み取ります。Safariは、このMacでSanka Monitorにフルディスクアクセスがすでに許可されている場合だけ読み取ります（アプリから許可を求めることはありません）。サイト名をSanka MonitorのビジネスSaaSの一覧と照合し、見つかったSaaSごとに、最後に使った日と、直近30日のうち使った日数だけを残します。URL、ページのタイトル、その他の閲覧履歴は保存せず、レポートにも書き込まず、このPCの外に出しません。保存したレポートには、SaaSの一覧とこの2つの値が含まれます。オフにすると結果を削除します。",
+      thisScan: (summary) => `このスキャン：${summary}`,
+      safariHint:
+        "macOSでは、フルディスクアクセスを許可したアプリだけがSafariの閲覧履歴を読み取れます。この許可はMac内のすべてのファイルを開けるようにするため、Sanka Monitorからは求めません。",
+      allowlistTitle: "会社の許可リスト",
+      allowlistExplain:
+        "IT部門は、会社が許可するSaaSをファイルにまとめ、デバイス管理でこのPCに配布するか、ここで選択できます。一覧にないSaaSを使っている場合は、リスクとして表示します。",
+      machinePath: (path) => `デバイス管理で配布する場合の場所：${path}`,
+      machineInUse: "デバイス管理で配布された会社のファイルを使用しています。",
+      chooseFile: "ファイルを選択…",
+      stopUsing: "このファイルの使用をやめる",
+      allowlistError: (error) => `許可リストを読み取れないため、SaaSを判定していません：${error}`,
+      listTitle: "見つかったSaaS",
+      none: "このPCでは、Sanka MonitorのカタログにあるSaaSは見つかりませんでした。",
+      onlyNotAllowed: (count) => `許可されていないSaaSのみ（${count}件）`,
+      migrationPage: "Sankaの移行ページ",
+      footer: (date) =>
+        `SaaSカタログの確認日：${date}。カタログにあるビジネスSaaSだけを照合し、カタログにないサイトは記録しません。`,
+    },
+    checks: {
+      title: "定期チェック",
+      regular:
+        "このPCを定期的にスキャンし、会社が許可していないSaaSや新しいリスクが見つかったら、Sanka Monitorで知らせる",
+      regularHint:
+        "オンにすると、Sanka Monitorはログイン時に起動し、メニューバー（Windowsでは通知領域）に常駐します。何も送信しません。",
+      daily: "毎日",
+      weekly: "毎週",
+      last: (at) => `前回の定期チェック：${at}`,
+      nudgesTitle: "前回のスキャン以降の新しいリスク",
+      dismiss: "閉じる",
     },
   },
 };

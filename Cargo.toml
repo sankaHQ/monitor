@@ -7,6 +7,7 @@ members = [
   "crates/monitor-inventory",
   "crates/monitor-posture",
   "crates/monitor-report",
+  "crates/monitor-saas",
   "crates/monitor-usage",
   "crates/monitor-store",
   "crates/monitor-sync",
