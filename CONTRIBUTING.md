@@ -22,8 +22,15 @@ the PC unless the person chooses otherwise; contributions should keep it that wa
 - **Privacy invariants.** The app reads with the signed-in person's rights and
   sends nothing in local mode. Do not add fields that could carry window titles,
   URLs, document or file contents, keystrokes, screen captures or install paths.
-  A change to what leaves the computer needs an issue and a maintainer's agreement
-  first.
+  The browser check keeps per SaaS only the last day used and the days used in the
+  last 30 (`BrowserUse`); do not widen it or `SaasRecord`, and do not let the
+  command-line scan read browser history. A change to what leaves the computer
+  needs an issue and a maintainer's agreement first.
+- **SaaS catalog.** `crates/monitor-saas/catalog/saas.json` lists each SaaS once.
+  Web patterns name the hosts the product runs on, not the vendor's marketing,
+  help or status sites (list those in `webExclude`). Desktop identifiers must be
+  ones you have seen on a real install. Add a case to the matching tests in
+  `crates/monitor-saas` for what a new entry matches and what it must not.
 - **Lifecycle catalog.** `crates/monitor-findings/catalog/rules.json` holds the
   vendor support dates. A new or changed rule needs the vendor's own source URL and
   the date you checked it (`sourceUrl`, `verifiedOn`), and a test case in

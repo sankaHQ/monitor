@@ -503,3 +503,29 @@ details pre {
 .views-failed button.link {
   flex: none;
 }
+
+.consent-label {
+  display: block;
+  color: var(--ink);
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 0.7rem;
+  font-weight: 700;
+  vertical-align: 1px;
+}
+
+.saas button.link {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.82rem;
+  text-align: left;
+}

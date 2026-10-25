@@ -1,0 +1,18 @@
+[package]
+name = "monitor-saas"
+description = "The SaaS a company uses, found on the PC by Sanka Monitor: the bundled SaaS catalog, desktop clients, the opt-in browser check and the company allowlist"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+chrono = { workspace = true }
+monitor-inventory = { path = "../monitor-inventory" }
+# Already in the build (monitor-findings, through tauri). Catalog patterns use no lookaround.
+regex = "1"
+# Already in the build (monitor-store): reads the browsers' history files, read-only.
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { workspace = true }
+serde_json = { workspace = true }

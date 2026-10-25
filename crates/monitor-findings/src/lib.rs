@@ -17,6 +17,10 @@
 //!   `eolProduct` and `eolEvent` take their date, source and successor from
 //!   it, as the server joins `data_ferry_eol_event`.
 //!
+//! SaaS findings ([`saas_findings`]) come from the company allowlist: a SaaS
+//! in use that it does not allow is shadow IT, or shadow AI for an AI tool.
+//! They are local only; the console does not raise them yet.
+//!
 //! Detection is deterministic: the same scan on the same day gives the same
 //! findings in the same order.
 
@@ -25,6 +29,7 @@ use std::sync::OnceLock;
 use chrono::{Datelike, NaiveDate};
 use monitor_inventory::InstalledSoftware;
 use monitor_posture::{PostureCheckId, PostureCheckResult};
+use monitor_saas::{BrowserUse, DesktopApp, SaasRecord};
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 
@@ -491,6 +496,10 @@ pub enum FindingType {
     DeviceSecureBootOff,
     SoftwareEndOfSupport,
     SoftwareOutdated,
+    /// A SaaS in use that the company allowlist does not allow (shadow IT).
+    SaasNotAllowed,
+    /// An AI tool in use that the company allowlist does not allow (shadow AI).
+    AiNotAllowed,
 }
 
 impl FindingType {
@@ -511,6 +520,8 @@ impl FindingType {
             FindingType::DeviceSecureBootOff => "device_secure_boot_off",
             FindingType::SoftwareEndOfSupport => "software_end_of_support",
             FindingType::SoftwareOutdated => "software_outdated",
+            FindingType::SaasNotAllowed => "saas_not_allowed",
+            FindingType::AiNotAllowed => "ai_not_allowed",
         }
     }
 }
@@ -520,6 +531,7 @@ impl FindingType {
 pub enum Area {
     Device,
     Software,
+    Saas,
 }
 
 /// Ordered most severe first.
@@ -570,6 +582,19 @@ pub struct ProgramRef {
     pub publisher: Option<String>,
 }
 
+/// The SaaS behind a SaaS finding, and where it was found. Like
+/// [`SaasRecord`], it has no room for web addresses.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaasEvidence {
+    pub key: String,
+    pub product: String,
+    pub vendor: String,
+    pub ai: bool,
+    pub desktop_apps: Vec<DesktopApp>,
+    pub browser: Option<BrowserUse>,
+}
+
 /// One risk on this device, with its evidence.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -587,6 +612,9 @@ pub struct Finding {
     /// Matching programs (at most [`MAX_EVIDENCE_PROGRAMS`]) and how many matched.
     pub programs: Vec<ProgramRef>,
     pub program_count: usize,
+    /// The SaaS behind a SaaS finding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saas: Option<SaasEvidence>,
 }
 
 /// What the device says about its operating system.
@@ -625,6 +653,7 @@ pub fn detect(
             lifecycle: None,
             programs: Vec::new(),
             program_count: 0,
+            saas: None,
         });
     }
 
@@ -646,6 +675,7 @@ pub fn detect(
             lifecycle: Some(lifecycle),
             programs: Vec::new(),
             program_count: 0,
+            saas: None,
         });
     }
 
@@ -705,8 +735,48 @@ fn software_findings(
             lifecycle: Some(lifecycle),
             programs,
             program_count,
+            saas: None,
         });
     }
+    findings
+}
+
+/// The SaaS findings: each SaaS in use that the company allowlist does not
+/// allow, AI tools first (high), then the rest (medium), in `records`
+/// order. Without an allowlist (`allowed: None`) there are none: no list,
+/// no policy to break.
+pub fn saas_findings(records: &[SaasRecord]) -> Vec<Finding> {
+    let mut findings: Vec<Finding> = records
+        .iter()
+        .filter(|record| record.allowed == Some(false))
+        .map(|record| {
+            let (finding_type, severity) = if record.ai {
+                (FindingType::AiNotAllowed, Severity::High)
+            } else {
+                (FindingType::SaasNotAllowed, Severity::Medium)
+            };
+            Finding {
+                finding_type,
+                area: Area::Saas,
+                severity,
+                subject_key: record.key.clone(),
+                check: None,
+                detail: None,
+                lifecycle: None,
+                programs: Vec::new(),
+                program_count: 0,
+                saas: Some(SaasEvidence {
+                    key: record.key.clone(),
+                    product: record.product.clone(),
+                    vendor: record.vendor.clone(),
+                    ai: record.ai,
+                    desktop_apps: record.desktop_apps.clone(),
+                    browser: record.browser,
+                }),
+            }
+        })
+        .collect();
+    findings.sort_by_key(|finding| finding.severity);
     findings
 }
 
@@ -1023,5 +1093,51 @@ mod tests {
         // A link to an event the catalog lacks keeps the rule, dateless.
         let linked = Catalog::from_json(&rule(r#","eolProduct":"x","eolEvent":"y""#), eol).unwrap();
         assert_eq!(linked.rules()[0].status(day(2030, 1, 1)), None);
+    }
+
+    #[test]
+    fn saas_the_allowlist_does_not_allow_is_shadow_it_and_ai_ranks_first() {
+        let catalog = monitor_saas::SaasCatalog::bundled();
+        let software = [
+            program(SoftwareSource::MacosApp, "Slack", Some("4.41")),
+            program(SoftwareSource::MacosApp, "Dropbox", None),
+        ];
+        let mut software = software.to_vec();
+        software[0].identifier = "com.tinyspeck.slackmacgap".into();
+        software[1].identifier = "com.getdropbox.dropbox".into();
+        let browser = std::collections::BTreeMap::from([(
+            "chatgpt".to_string(),
+            BrowserUse {
+                last_used_on: day(2026, 10, 25),
+                days_used30: 4,
+            },
+        )]);
+        let allowlist = monitor_saas::Allowlist::parse(
+            r#"{"schemaVersion": 1, "allowed": ["slack"]}"#,
+            catalog,
+            monitor_saas::AllowlistOrigin::Machine,
+        )
+        .unwrap();
+        let records = monitor_saas::records(catalog, &software, Some(&browser), Some(&allowlist));
+        let findings = saas_findings(&records);
+        assert_eq!(
+            types(&findings),
+            [
+                ("ai_not_allowed", Severity::High, "chatgpt"),
+                ("saas_not_allowed", Severity::Medium, "dropbox"),
+            ]
+        );
+        assert_eq!(findings[0].area, Area::Saas);
+        assert_eq!(
+            findings[0]
+                .saas
+                .as_ref()
+                .and_then(|s| s.browser)
+                .map(|b| b.days_used30),
+            Some(4)
+        );
+        // No allowlist, no policy: nothing is flagged.
+        let unmarked = monitor_saas::records(catalog, &software, Some(&browser), None);
+        assert!(saas_findings(&unmarked).is_empty());
     }
 }

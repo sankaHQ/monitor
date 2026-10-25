@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { formatDay, formatTime, type Strings } from "./i18n";
+import { BrowserCheck } from "./SaasPane";
 import type {
   Lang,
   PersonView,
   PersonViews,
   PersonViewsError,
+  SaasSettings,
+  ScanView,
   SentPayload,
   Status,
 } from "./types";
@@ -18,6 +21,13 @@ export function PrivacyPane({
   busy,
   run,
   refresh,
+  scan,
+  scanning,
+  saas,
+  onSaas,
+  onScan,
+  onScanChanged,
+  setError,
 }: {
   s: Strings;
   lang: Lang;
@@ -26,6 +36,13 @@ export function PrivacyPane({
   busy: boolean;
   run: (command: string, args?: Record<string, unknown>) => Promise<void>;
   refresh: () => Promise<void>;
+  scan: ScanView | null;
+  scanning: boolean;
+  saas: SaasSettings | null;
+  onSaas: (settings: SaasSettings) => void;
+  onScan: () => void;
+  onScanChanged: () => void;
+  setError: (error: string | null) => void;
 }) {
   const t = s.privacy;
   return (
@@ -54,6 +71,18 @@ export function PrivacyPane({
       {status.enrolled ? (
         <WhoOpened s={s} lang={lang} deviceId={status.deviceId} refresh={refresh} />
       ) : null}
+
+      <BrowserCheck
+        s={s}
+        lang={lang}
+        settings={saas}
+        onSettings={onSaas}
+        setError={setError}
+        scan={scan}
+        scanning={scanning}
+        onScan={onScan}
+        onScanChanged={onScanChanged}
+      />
 
       <h2 className="gap">{t.readsTitle}</h2>
       <ul>
