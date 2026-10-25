@@ -12,6 +12,7 @@ chrono = { workspace = true }
 monitor-findings = { path = "../monitor-findings" }
 monitor-inventory = { path = "../monitor-inventory" }
 monitor-posture = { path = "../monitor-posture" }
+monitor-saas = { path = "../monitor-saas" }
 # Writes .xlsx with no Excel and no network (MIT OR Apache-2.0).
 rust_xlsxwriter = { version = "0.100", default-features = false }
 serde = { workspace = true }

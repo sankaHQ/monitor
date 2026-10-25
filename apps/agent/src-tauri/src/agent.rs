@@ -22,7 +22,10 @@
 //!   only, and is not gated by the usage-sharing consent;
 //! - "Who opened your data" is read from the workspace only while connected,
 //!   when the Privacy pane asks for it: a device that is not connected sends
-//!   nothing but the update check.
+//!   nothing but the update check;
+//! - the browser check (`saas.rs`) is the person's choice, off by default;
+//!   the app never sends what it finds, connected or not. Its two values per
+//!   SaaS leave the computer only inside a report the person saves or uploads.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -108,6 +111,13 @@ pub struct AgentConfig {
     /// network request when it is not enrolled. A device setting: it
     /// survives Disconnect.
     pub update_checks_off: bool,
+    /// The person turned on the browser check: scans read this computer's
+    /// browser history to find the SaaS in use. Off by default; the
+    /// person's setting, so it survives Disconnect.
+    pub browser_saas_check: bool,
+    /// Regular checks: rescan on this schedule and nudge about anything new.
+    pub check_schedule: Option<crate::checks::CheckSchedule>,
+    pub last_scheduled_check_at: Option<DateTime<Utc>>,
 }
 
 impl AgentConfig {
@@ -195,12 +205,16 @@ impl AgentConfig {
 
     /// Forgets the enrollment and everything learned under it, keeping only a
     /// developer API override, the revokes still owed to the server and the
-    /// person's update-check setting.
+    /// person's own settings: update checks, the browser check and regular
+    /// checks.
     pub fn unenrolled(&self) -> AgentConfig {
         AgentConfig {
             api_base: self.api_base.clone(),
             pending_revokes: self.pending_revokes.clone(),
             update_checks_off: self.update_checks_off,
+            browser_saas_check: self.browser_saas_check,
+            check_schedule: self.check_schedule,
+            last_scheduled_check_at: self.last_scheduled_check_at,
             ..AgentConfig::default()
         }
     }
@@ -350,6 +364,9 @@ pub struct StatusView {
 
 /// Lock order: `config` before `usage`. Collection is switched while the
 /// config lock is held, so it always matches the config that was just saved.
+/// `scan_lock` comes before `config`, `last_scan`, `pending_upload` and
+/// `checks_lock`: whatever changes what a scan reads (the browser check, the
+/// allowlist) waits for the scan in flight, so it cannot bring old results back.
 #[derive(Default)]
 pub struct AgentState {
     pub config: Mutex<AgentConfig>,
@@ -384,6 +401,10 @@ pub struct AgentState {
     /// When the update check last ran, and why it last failed.
     pub last_update_check_at: Mutex<Option<DateTime<Utc>>>,
     pub update_check_error: Mutex<Option<String>>,
+    /// Wakes the regular-check loop when its schedule changes.
+    pub schedule_wake: Notify,
+    /// One read-modify-write of the regular checks' state at a time.
+    pub checks_lock: Mutex<()>,
 }
 
 fn config_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -427,7 +448,7 @@ pub fn enable_autostart_once(app: &AppHandle, config: &mut AgentConfig) -> bool 
 
 /// A login item must point at an installed copy, not at the mounted disk
 /// image or a translocated quarantine copy whose path changes every launch.
-fn running_installed() -> bool {
+pub(crate) fn running_installed() -> bool {
     std::env::current_exe().is_ok_and(|exe| {
         let exe = exe.to_string_lossy();
         !(exe.starts_with("/Volumes/") || exe.contains("/AppTranslocation/"))

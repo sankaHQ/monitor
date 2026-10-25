@@ -7,9 +7,12 @@
 //!    user, department, location and notes that only IT knows.
 //! 3. Software: each installed program and version per device, with its
 //!    support status, last day of support and the vendor's next step.
-//! 4. Risks: the risk list, most severe first, with evidence and the fix,
+//! 4. SaaS: each SaaS per device, its category and AI flag, where it was
+//!    found (desktop app, browser), when it was last used in the browser,
+//!    whether the company allows it, and whether Sanka can migrate it.
+//! 5. Risks: the risk list, most severe first, with evidence and the fix,
 //!    plus a status (list) and an owner for IT to work through.
-//! 5. Security checks: every check per device, as the device reported it.
+//! 6. Security checks: every check per device, as the device reported it.
 //!
 //! Every cell is written as a value, never a formula, so text from the
 //! device cannot run in Excel. Several reports (a fleet) write into the same
@@ -180,6 +183,17 @@ pub fn write(reports: &[ScanReport], lang: Lang) -> Result<Vec<u8>, XlsxError> {
             }
             many => line(l.devices, many.len().to_string())?,
         }
+        // Distinct SaaS across the devices, and those not allowed on any.
+        let saas: std::collections::BTreeSet<&str> = reports
+            .iter()
+            .flat_map(|r| r.saas.iter().map(|s| s.key.as_str()))
+            .collect();
+        let not_allowed: std::collections::BTreeSet<&str> = reports
+            .iter()
+            .flat_map(|r| r.saas.iter())
+            .filter(|s| s.allowed == Some(false))
+            .map(|s| s.key.as_str())
+            .collect();
         line(
             l.open_findings,
             format!(
@@ -189,11 +203,28 @@ pub fn write(reports: &[ScanReport], lang: Lang) -> Result<Vec<u8>, XlsxError> {
         )?;
         line(l.programs, programs.to_string())?;
         line(l.programs_past_support, past.to_string())?;
+        line(l.saas_found, saas.len().to_string())?;
+        line(l.saas_not_allowed, not_allowed.len().to_string())?;
+        if let [one] = reports {
+            line(
+                l.browser_check,
+                copy::browser_check(one.saas_check.browsers.as_deref(), lang),
+            )?;
+            line(l.allowlist, copy::allowlist_line(&one.saas_check, lang))?;
+        }
         if let Some(first) = reports.first() {
             line(l.agent_version, first.agent_version.clone())?;
             line(
                 l.catalog_verified,
                 first
+                    .catalog_verified_on
+                    .map(|d| d.to_string())
+                    .unwrap_or_default(),
+            )?;
+            line(
+                l.saas_catalog_verified,
+                first
+                    .saas_check
                     .catalog_verified_on
                     .map(|d| d.to_string())
                     .unwrap_or_default(),
@@ -355,7 +386,88 @@ pub fn write(reports: &[ScanReport], lang: Lang) -> Result<Vec<u8>, XlsxError> {
         }
     }
 
-    // 4. Risks
+    // 4. SaaS
+    {
+        let sheet = workbook.add_worksheet();
+        sheet.set_name(l.saas)?;
+        let rows: u32 = reports.iter().map(|r| r.saas.len() as u32).sum();
+        table_header(
+            sheet,
+            &f,
+            &[
+                (l.hostname, 20.0),
+                (l.saas_name, 30.0),
+                (l.vendor, 18.0),
+                (l.category, 20.0),
+                (l.ai, 6.0),
+                (l.found_from, 18.0),
+                (l.desktop_app, 26.0),
+                (l.last_used, 14.0),
+                (l.days_used, 12.0),
+                (l.allowed, 14.0),
+                (l.sanka_migration, 18.0),
+                (l.migration_page, 40.0),
+            ],
+            rows,
+        )?;
+        let mut row = 1u32;
+        for report in reports {
+            for record in &report.saas {
+                let allowed_format = match record.allowed {
+                    Some(true) => &f.pass,
+                    Some(false) => &f.fail,
+                    None => &f.text,
+                };
+                let apps = record.desktop_app_names();
+                let cells: [(&str, &Format); 8] = [
+                    (&report.device.hostname, &f.text),
+                    (&record.product, &f.text),
+                    (&record.vendor, &f.text),
+                    (copy::saas_category(record.category, lang), &f.text),
+                    (if record.ai { "AI" } else { "" }, &f.text),
+                    (copy::saas_found_from(record, lang), &f.text),
+                    (&apps.join(", "), &f.text),
+                    (
+                        &record
+                            .browser
+                            .map(|b| b.last_used_on.to_string())
+                            .unwrap_or_default(),
+                        &f.text,
+                    ),
+                ];
+                for (col, (value, format)) in cells.iter().enumerate() {
+                    sheet.write_string_with_format(row, col as u16, *value, format)?;
+                }
+                match record.browser {
+                    Some(used) => {
+                        sheet.write_number_with_format(row, 8, used.days_used30 as f64, &f.text)?
+                    }
+                    None => sheet.write_string_with_format(row, 8, "", &f.text)?,
+                };
+                sheet.write_string_with_format(
+                    row,
+                    9,
+                    copy::saas_allowed(record.allowed, lang),
+                    allowed_format,
+                )?;
+                sheet.write_string_with_format(
+                    row,
+                    10,
+                    copy::saas_migration(record, lang),
+                    &f.text,
+                )?;
+                sheet.write_string_with_format(
+                    row,
+                    11,
+                    copy::saas_migration_url(record, lang).unwrap_or_default(),
+                    &f.text,
+                )?;
+                row += 1;
+            }
+        }
+    }
+
+    // 5. Risks
     {
         let sheet = workbook.add_worksheet();
         sheet.set_name(l.findings)?;
@@ -425,7 +537,7 @@ pub fn write(reports: &[ScanReport], lang: Lang) -> Result<Vec<u8>, XlsxError> {
         }
     }
 
-    // 5. Security checks
+    // 6. Security checks
     {
         let sheet = workbook.add_worksheet();
         sheet.set_name(l.checks)?;
@@ -551,7 +663,7 @@ mod tests {
         for lang in [Lang::En, Lang::Ja] {
             let bytes = write(std::slice::from_ref(&report), lang).unwrap();
             assert_eq!(&bytes[..2], b"PK");
-            let risks = sheet_strings(&bytes, 4);
+            let risks = sheet_strings(&bytes, 5);
             for finding in &report.findings {
                 assert!(risks.contains(&copy::headline(finding, lang)), "{lang:?}");
                 assert!(
@@ -566,6 +678,27 @@ mod tests {
     }
 
     #[test]
+    fn the_saas_sheet_lists_each_saas_with_the_companys_verdict_and_sankas_path() {
+        let report = fixtures::windows_report_with_saas();
+        for lang in [Lang::En, Lang::Ja] {
+            let bytes = write(std::slice::from_ref(&report), lang).unwrap();
+            let saas = sheet_strings(&bytes, 4);
+            for product in ["ChatGPT", "Dropbox", "Salesforce", "Slack"] {
+                assert!(saas.contains(&product.to_string()), "{lang:?} {product}");
+            }
+            assert!(saas.contains(&copy::saas_allowed(Some(false), lang).to_string()));
+            assert!(saas.contains(&copy::saas_migration_url(&report.saas[2], lang).unwrap()));
+            assert!(saas.contains(&"2026-10-18".to_string()));
+            let summary = sheet_strings(&bytes, 1);
+            assert!(
+                summary.iter().any(|s| s.contains("Example K.K.")),
+                "{lang:?}"
+            );
+            assert!(summary.iter().any(|s| s.contains("Chrome")), "{lang:?}");
+        }
+    }
+
+    #[test]
     fn a_fleet_writes_one_ledger_row_per_device() {
         let mut second = fixtures::windows_report();
         second.device.hostname = "SALES-PC-08".into();
@@ -574,7 +707,7 @@ mod tests {
         let devices = sheet_strings(&bytes, 2);
         assert!(devices.contains(&"SALES-PC-07".to_string()));
         assert!(devices.contains(&"SALES-PC-08".to_string()));
-        let risks = sheet_strings(&bytes, 4);
+        let risks = sheet_strings(&bytes, 5);
         let per_device = reports[0].findings.len();
         assert_eq!(
             risks.iter().filter(|s| s.as_str() == "SALES-PC-08").count(),

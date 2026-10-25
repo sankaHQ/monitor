@@ -4,6 +4,8 @@
 
 use monitor_findings::{Area, Finding, FindingType, Lifecycle, LifecycleStatus, Severity};
 use monitor_posture::PostureCheckId;
+use monitor_saas::history::{BrowserResult, BrowserStatus};
+use monitor_saas::{AllowlistOrigin, BrowserUse, Category, DesktopApp, SaasRecord};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -80,17 +82,27 @@ pub fn title(finding_type: FindingType, lang: Lang) -> &'static str {
             "Software version is outdated",
             "ソフトウェアのバージョンが古い状態です",
         ),
+        SaasNotAllowed => lang.pick(
+            "SaaS your company has not allowed",
+            "会社が許可していないSaaSです",
+        ),
+        AiNotAllowed => lang.pick(
+            "AI tool your company has not allowed",
+            "会社が許可していないAIツールです",
+        ),
     }
 }
 
-/// The finding's title with its subject: the product for lifecycle findings.
+/// The finding's title with its subject: the product for lifecycle and
+/// SaaS findings.
 pub fn headline(finding: &Finding, lang: Lang) -> String {
-    match &finding.lifecycle {
-        Some(lifecycle) => format!(
-            "{}: {}",
-            title(finding.finding_type, lang),
-            product(lifecycle, lang)
-        ),
+    let subject = match (&finding.lifecycle, &finding.saas) {
+        (Some(lifecycle), _) => Some(product(lifecycle, lang)),
+        (None, Some(saas)) => Some(saas.product.as_str()),
+        (None, None) => None,
+    };
+    match subject {
+        Some(subject) => format!("{}: {subject}", title(finding.finding_type, lang)),
         None => title(finding.finding_type, lang).to_string(),
     }
 }
@@ -234,13 +246,34 @@ pub fn fix(finding: &Finding, platform: &str, lang: Lang) -> String {
                 (Lang::Ja, None) => "サポート中のバージョンへ更新するか、不要であればアンインストールしてください。".to_string(),
             };
         }
+        SaasNotAllowed | AiNotAllowed => {
+            let product = finding.saas.as_ref().map(|s| s.product.as_str()).unwrap_or_default();
+            return match (lang, finding.finding_type == AiNotAllowed) {
+                (Lang::En, false) => format!(
+                    "Ask IT whether {product} may be used. If not, stop using it and uninstall its app."
+                ),
+                (Lang::Ja, false) => format!(
+                    "{product}を使ってよいかIT部門に確認し、使えない場合は利用をやめてアプリを削除してください。"
+                ),
+                (Lang::En, true) => format!(
+                    "Keep company information out of {product} until IT allows it; use the AI tool your company allows."
+                ),
+                (Lang::Ja, true) => format!(
+                    "IT部門が許可するまで{product}に会社の情報を入力せず、会社が認めるAIツールを使ってください。"
+                ),
+            };
+        }
     };
     text.to_string()
 }
 
-/// The finding's evidence in one line: what the check reported, or the
-/// matching programs and the vendor's last day of support.
+/// The finding's evidence in one line: what the check reported, the
+/// matching programs and the vendor's last day of support, or where a SaaS
+/// was found.
 pub fn evidence(finding: &Finding, lang: Lang) -> String {
+    if let Some(saas) = &finding.saas {
+        return saas_sources(&saas.desktop_apps, saas.browser.as_ref(), lang);
+    }
     let mut parts = Vec::new();
     if let Some(detail) = finding.detail.as_deref().filter(|d| !d.is_empty()) {
         parts.push(check_detail(detail, lang));
@@ -376,6 +409,220 @@ pub fn check_detail(detail: &str, lang: Lang) -> String {
     detail.to_string()
 }
 
+/// Where a SaaS was found, in one line: its desktop apps, and what the
+/// browser check kept.
+pub fn saas_sources(desktop: &[DesktopApp], browser: Option<&BrowserUse>, lang: Lang) -> String {
+    let mut parts = Vec::new();
+    if !desktop.is_empty() {
+        let apps: Vec<String> = desktop
+            .iter()
+            .map(|app| match &app.version {
+                Some(version) => format!("{} {version}", app.name),
+                None => app.name.clone(),
+            })
+            .collect();
+        parts.push(format!(
+            "{}{}",
+            lang.pick("Desktop app: ", "デスクトップアプリ："),
+            apps.join(", ")
+        ));
+    }
+    if let Some(used) = browser {
+        parts.push(match lang {
+            Lang::En => format!(
+                "Browser: last used {}, on {} of the last 30 days",
+                used.last_used_on, used.days_used30
+            ),
+            Lang::Ja => format!(
+                "ブラウザー：最終利用 {}、直近30日のうち{}日",
+                used.last_used_on, used.days_used30
+            ),
+        });
+    }
+    parts.join(" · ")
+}
+
+/// How a SaaS was found, as a short label.
+pub fn saas_found_from(record: &SaasRecord, lang: Lang) -> &'static str {
+    match (!record.desktop_apps.is_empty(), record.browser.is_some()) {
+        (true, true) => lang.pick("Desktop app and browser", "デスクトップアプリ、ブラウザー"),
+        (true, false) => lang.pick("Desktop app", "デスクトップアプリ"),
+        (false, _) => lang.pick("Browser", "ブラウザー"),
+    }
+}
+
+/// The company's verdict on a SaaS.
+pub fn saas_allowed(allowed: Option<bool>, lang: Lang) -> &'static str {
+    match allowed {
+        Some(true) => lang.pick("Allowed", "許可済み"),
+        Some(false) => lang.pick("Not allowed", "未許可"),
+        None => lang.pick("No company list", "許可リストなし"),
+    }
+}
+
+/// Whether Sanka can migrate a SaaS: with a connector that moves its data,
+/// or as a migration Sanka plans on an assessment.
+pub fn saas_migration(record: &SaasRecord, lang: Lang) -> &'static str {
+    match (&record.connector, &record.migrate) {
+        (Some(_), _) => lang.pick("Yes (connector)", "対応（コネクタあり）"),
+        (None, Some(_)) => lang.pick("Yes (assessment)", "対応（アセスメント）"),
+        (None, None) => "—",
+    }
+}
+
+/// The Sanka migration page of a SaaS in `lang`.
+pub fn saas_migration_url(record: &SaasRecord, lang: Lang) -> Option<String> {
+    record
+        .migrate
+        .as_deref()
+        .map(|slug| monitor_saas::migrate_url(slug, lang.code()))
+}
+
+pub fn saas_category(category: Category, lang: Lang) -> &'static str {
+    use Category::*;
+    match category {
+        Ai => lang.pick("AI", "AI"),
+        Chat => lang.pick("Chat", "チャット"),
+        Meetings => lang.pick("Meetings and video", "会議・動画"),
+        Suite => lang.pick("Office suite and email", "グループウェア・メール"),
+        Files => lang.pick("File sharing", "ファイル共有"),
+        Crm => lang.pick("CRM and sales", "CRM・営業"),
+        Marketing => lang.pick("Marketing", "マーケティング"),
+        Design => lang.pick("Design and whiteboards", "デザイン・ホワイトボード"),
+        Support => lang.pick("Customer support", "カスタマーサポート"),
+        Itsm => lang.pick(
+            "IT service and device management",
+            "ITサービス・デバイス管理",
+        ),
+        Work => lang.pick("Project and work management", "プロジェクト・タスク管理"),
+        Knowledge => lang.pick("Docs and notes", "ドキュメント・ノート"),
+        Dev => lang.pick("Developer tools", "開発ツール"),
+        Cloud => lang.pick("Cloud platforms", "クラウド基盤"),
+        Analytics => lang.pick("Analytics and BI", "分析・BI"),
+        Automation => lang.pick("Automation", "自動化"),
+        Hr => lang.pick("HR and recruiting", "人事・採用"),
+        Finance => lang.pick("Accounting and expenses", "会計・経費"),
+        Erp => lang.pick("ERP", "ERP"),
+        Esign => lang.pick("E-signature", "電子契約"),
+        Commerce => lang.pick("E-commerce", "EC"),
+        Identity => lang.pick("Sign-in and identity", "認証・ID管理"),
+        Security => lang.pick("Security", "セキュリティ"),
+        Remote => lang.pick("Remote access", "リモートアクセス"),
+    }
+}
+
+/// The browser check as a report states it: off, or which browsers it read
+/// and which it could not.
+pub fn browser_check(browsers: Option<&[BrowserResult]>, lang: Lang) -> String {
+    let Some(browsers) = browsers else {
+        return lang
+            .pick("Off (desktop apps only)", "オフ（デスクトップアプリのみ）")
+            .to_string();
+    };
+    let names = |status: BrowserStatus| -> Vec<&'static str> {
+        browsers
+            .iter()
+            .filter(|b| b.status == status)
+            .map(|b| b.browser.name())
+            .collect()
+    };
+    let sep = lang.pick(", ", "、");
+    let mut parts = vec![lang.pick("On", "オン").to_string()];
+    let read = names(BrowserStatus::Read);
+    if !read.is_empty() {
+        parts.push(format!(
+            "{}{}",
+            lang.pick("read: ", "読み取り："),
+            read.join(sep)
+        ));
+    }
+    let mut not_read: Vec<String> = names(BrowserStatus::NeedsFullDiskAccess)
+        .into_iter()
+        .map(|name| {
+            format!(
+                "{name}{}",
+                lang.pick(
+                    " (needs Full Disk Access)",
+                    "（フルディスクアクセスが必要）"
+                )
+            )
+        })
+        .collect();
+    not_read.extend(names(BrowserStatus::Unreadable).into_iter().map(|name| {
+        format!(
+            "{name}{}",
+            lang.pick(" (could not be read)", "（読み取れませんでした）")
+        )
+    }));
+    if !not_read.is_empty() {
+        parts.push(format!(
+            "{}{}",
+            lang.pick("not read: ", "読み取れなかったもの："),
+            not_read.join(sep)
+        ));
+    }
+    if read.is_empty() && not_read.is_empty() {
+        parts.push(
+            lang.pick(
+                "no browser history found",
+                "ブラウザーの閲覧履歴は見つかりませんでした",
+            )
+            .to_string(),
+        );
+    }
+    parts.join(" · ")
+}
+
+/// The allowlist a scan used, as a report states it: also when the
+/// company's file could not be read.
+pub fn allowlist_line(check: &crate::SaasCheck, lang: Lang) -> String {
+    if check.allowlist_unreadable {
+        return lang
+            .pick(
+                "Could not be read: SaaS were not judged",
+                "読み取れませんでした（SaaSは判定していません）",
+            )
+            .to_string();
+    }
+    allowlist_summary(check.allowlist.as_ref(), lang)
+}
+
+/// The company allowlist as a report states it.
+pub fn allowlist_summary(summary: Option<&crate::AllowlistSummary>, lang: Lang) -> String {
+    let Some(summary) = summary else {
+        return lang
+            .pick(
+                "None: SaaS are listed, not judged",
+                "なし（SaaSを一覧にするだけで、判定はしません）",
+            )
+            .to_string();
+    };
+    let origin = match summary.origin {
+        AllowlistOrigin::CommandLine => {
+            lang.pick("given on the command line", "コマンドラインで指定")
+        }
+        AllowlistOrigin::Machine => lang.pick("placed by device management", "デバイス管理で配布"),
+        AllowlistOrigin::App => lang.pick("chosen in the app", "アプリで選択"),
+    };
+    let mut parts = Vec::new();
+    if let Some(name) = &summary.name {
+        parts.push(name.clone());
+    }
+    parts.push(match lang {
+        Lang::En => format!("{} allowed", summary.allowed),
+        Lang::Ja => format!("許可 {}件", summary.allowed),
+    });
+    parts.push(origin.to_string());
+    if !summary.unknown.is_empty() {
+        parts.push(format!(
+            "{}{}",
+            lang.pick("not in the catalog: ", "カタログにない項目："),
+            summary.unknown.join(", ")
+        ));
+    }
+    parts.join(" · ")
+}
+
 pub fn severity(severity: Severity, lang: Lang) -> &'static str {
     match severity {
         Severity::High => lang.pick("High", "高"),
@@ -388,6 +635,7 @@ pub fn area(area: Area, lang: Lang) -> &'static str {
     match area {
         Area::Device => lang.pick("Device", "デバイス"),
         Area::Software => lang.pick("Software", "ソフトウェア"),
+        Area::Saas => "SaaS",
     }
 }
 
@@ -532,6 +780,27 @@ pub struct Labels {
     pub legacy_none: &'static str,
     pub assessment: &'static str,
     pub count_suffix: &'static str,
+    pub saas: &'static str,
+    pub saas_name: &'static str,
+    pub vendor: &'static str,
+    pub category: &'static str,
+    pub ai: &'static str,
+    pub found_from: &'static str,
+    pub desktop_app: &'static str,
+    pub last_used: &'static str,
+    pub days_used: &'static str,
+    pub allowed: &'static str,
+    pub sanka_migration: &'static str,
+    pub migration_page: &'static str,
+    pub saas_found: &'static str,
+    pub saas_not_allowed: &'static str,
+    pub browser_check: &'static str,
+    pub allowlist: &'static str,
+    pub saas_catalog_verified: &'static str,
+    pub saas_title: &'static str,
+    pub saas_none: &'static str,
+    pub saas_note: &'static str,
+    pub saas_migrate: &'static str,
 }
 
 pub fn labels(lang: Lang) -> Labels {
@@ -596,6 +865,27 @@ pub fn labels(lang: Lang) -> Labels {
             legacy_none: "No installed software is past or near the end of vendor support.",
             assessment: "Send this report to your Sanka contact for a free migration assessment: sanka.com",
             count_suffix: "",
+            saas: "SaaS",
+            saas_name: "SaaS",
+            vendor: "Vendor",
+            category: "Category",
+            ai: "AI",
+            found_from: "Found from",
+            desktop_app: "Desktop app",
+            last_used: "Last used (browser)",
+            days_used: "Days used in the last 30 (browser)",
+            allowed: "Company allows it",
+            sanka_migration: "Sanka can migrate it",
+            migration_page: "Sanka migration page",
+            saas_found: "SaaS found",
+            saas_not_allowed: "SaaS not allowed",
+            browser_check: "Browser check",
+            allowlist: "Company allowlist",
+            saas_catalog_verified: "SaaS catalog checked on",
+            saas_title: "SaaS in use",
+            saas_none: "No SaaS in Sanka Monitor's catalog was found on this device.",
+            saas_note: "Found from installed desktop apps and, only if the person turned it on, the browser check. Web addresses and page titles are never kept or written to this report.",
+            saas_migrate: "Sanka can migrate",
         },
         Lang::Ja => Labels {
             report_title: "ITリスクレポート",
@@ -657,6 +947,27 @@ pub fn labels(lang: Lang) -> Labels {
             legacy_none: "サポート終了、または終了間近のソフトウェアはありません。",
             assessment: "このレポートを Sanka の担当者に送ると、無料で移行アセスメントを受けられます：sanka.com",
             count_suffix: "件",
+            saas: "SaaS台帳",
+            saas_name: "SaaS",
+            vendor: "提供元",
+            category: "カテゴリ",
+            ai: "AI",
+            found_from: "検出元",
+            desktop_app: "デスクトップアプリ",
+            last_used: "最終利用日（ブラウザー）",
+            days_used: "直近30日の利用日数（ブラウザー）",
+            allowed: "会社の許可",
+            sanka_migration: "Sankaで移行",
+            migration_page: "Sankaの移行ページ",
+            saas_found: "検出したSaaS",
+            saas_not_allowed: "許可されていないSaaS",
+            browser_check: "ブラウザーの確認",
+            allowlist: "会社の許可リスト",
+            saas_catalog_verified: "SaaSカタログの確認日",
+            saas_title: "利用中のSaaS",
+            saas_none: "この端末では、Sanka MonitorのカタログにあるSaaSは見つかりませんでした。",
+            saas_note: "インストール済みのデスクトップアプリと、本人がオンにした場合だけブラウザーの確認から検出しています。URLとページのタイトルは保存せず、このレポートにも記載しません。",
+            saas_migrate: "Sankaで移行できるSaaS",
         },
     }
 }
