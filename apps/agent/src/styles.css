@@ -7,14 +7,29 @@
   color-scheme: light dark;
 }
 
+/* The OS appearance, unless the person chose Light at the top right. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #0e1514;
     --ink: #e2ece9;
     --muted: #8fa39e;
     --line: #263431;
     --accent: #3ecfbf;
   }
+}
+
+/* A choice at the top right overrides the OS appearance. */
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0e1514;
+  --ink: #e2ece9;
+  --muted: #8fa39e;
+  --line: #263431;
+  --accent: #3ecfbf;
 }
 
 * {
@@ -325,6 +340,7 @@ details pre {
 
 .seg {
   display: inline-flex;
+  flex-shrink: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
   overflow: hidden;
@@ -337,11 +353,29 @@ details pre {
   color: var(--muted);
   font-weight: 500;
   padding: 6px 12px;
+  white-space: nowrap;
 }
 
 .seg-item.active {
   background: var(--accent);
   color: #fff;
+}
+
+.report-lang {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0 4px;
+  color: var(--muted);
+}
+
+.report-lang select {
+  font: inherit;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 4px 8px;
 }
 
 .tiles {

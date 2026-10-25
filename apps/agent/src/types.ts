@@ -2,6 +2,8 @@
 
 export type Lang = "en" | "ja";
 
+export type Theme = "system" | "light" | "dark";
+
 export type PostureCheck = {
   id: string;
   label: string;
