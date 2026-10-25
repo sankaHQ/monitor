@@ -1,5 +1,6 @@
-//! The local scan in the app: scan this device, show the risks, and save the
-//! Excel ledger, the CSV or the one-page report where the person chooses.
+//! The local scan in the app: scan this device, show the risks and the SaaS
+//! in use, and save the Excel ledger, the CSV or the one-page report where
+//! the person chooses.
 //! Works without enrollment and sends nothing: saving writes one file that
 //! the person picked in the system's save dialog (which also spares macOS's
 //! folder-access prompt).
@@ -62,6 +63,35 @@ pub struct SoftwareView {
     pub successor: Option<String>,
 }
 
+/// A SaaS as the app shows it. No web addresses: the record has none.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaasView {
+    pub key: String,
+    pub product: String,
+    pub vendor: String,
+    pub category_label: &'static str,
+    pub ai: bool,
+    pub found_from: &'static str,
+    pub sources: String,
+    pub allowed: Option<bool>,
+    pub allowed_label: &'static str,
+    /// Sanka can migrate it: a migration page, and whether a connector exists.
+    pub migration_label: &'static str,
+    pub migratable: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaasCheckView {
+    /// The browser check ran with this scan.
+    pub browser_check: bool,
+    pub browsers: Vec<monitor_saas::history::BrowserResult>,
+    pub browser_summary: String,
+    pub allowlist_summary: String,
+    pub catalog_verified_on: Option<NaiveDate>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OsSupportView {
@@ -85,6 +115,8 @@ pub struct ScanView {
     pub findings: Vec<FindingView>,
     pub checks: Vec<CheckView>,
     pub software: Vec<SoftwareView>,
+    pub saas: Vec<SaasView>,
+    pub saas_check: SaasCheckView,
 }
 
 pub fn scan_view(report: &ScanReport, lang: Lang) -> ScanView {
@@ -148,6 +180,30 @@ pub fn scan_view(report: &ScanReport, lang: Lang) -> ScanView {
                 }
             })
             .collect(),
+        saas: report
+            .saas
+            .iter()
+            .map(|record| SaasView {
+                key: record.key.clone(),
+                product: record.product.clone(),
+                vendor: record.vendor.clone(),
+                category_label: copy::saas_category(record.category, lang),
+                ai: record.ai,
+                found_from: copy::saas_found_from(record, lang),
+                sources: copy::saas_sources(&record.desktop_apps, record.browser.as_ref(), lang),
+                allowed: record.allowed,
+                allowed_label: copy::saas_allowed(record.allowed, lang),
+                migration_label: copy::saas_migration(record, lang),
+                migratable: record.migrate.is_some(),
+            })
+            .collect(),
+        saas_check: SaasCheckView {
+            browser_check: report.saas_check.browsers.is_some(),
+            browsers: report.saas_check.browsers.clone().unwrap_or_default(),
+            browser_summary: copy::browser_check(report.saas_check.browsers.as_deref(), lang),
+            allowlist_summary: copy::allowlist_line(&report.saas_check, lang),
+            catalog_verified_on: report.saas_check.catalog_verified_on,
+        },
     }
 }
 
@@ -163,14 +219,14 @@ pub struct SavedReport {
     pub report_id: String,
 }
 
-/// Scans this device now (a few seconds) and shows it in `lang`.
+/// Scans this device now (a few seconds; longer with the browser check on)
+/// and shows it in `lang`.
 #[tauri::command]
 pub async fn scan_device(app: AppHandle, lang: Lang) -> Result<ScanView, String> {
     let state: State<'_, AgentState> = app.state();
     let _one_scan = state.scan_lock.lock().await;
-    let report = tauri::async_runtime::spawn_blocking(|| crate::scan::run_scan(Utc::now()))
-        .await
-        .map_err(|err| format!("the scan stopped: {err}"))?;
+    let report = crate::checks::scan_now(&app).await?;
+    crate::checks::record_scan(&app, &report).await;
     let view = scan_view(&report, lang);
     *state.last_scan.lock().await = Some(report);
     Ok(view)

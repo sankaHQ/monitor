@@ -1,15 +1,17 @@
 //! The one-page IT risk report: a self-contained HTML page (no scripts, no
 //! external fonts or images) that reads on screen and prints on one A4
 //! sheet, so it can be saved as PDF from any browser. Sections: the risk
-//! summary, the top eight risks with their fix, the device and its checks, and
-//! "Legacy systems and migration candidates".
+//! summary, the top eight risks with their fix, the SaaS in use, the device
+//! and its checks, and "Legacy systems and migration candidates".
 
-use monitor_findings::{FindingType, LifecycleStatus, Severity};
+use monitor_findings::{Area, Finding, FindingType, LifecycleStatus, Severity};
 
 use crate::copy::{self, Lang};
 use crate::ScanReport;
 
 const TOP_FINDINGS: usize = 8;
+/// SaaS findings among the top risks; the SaaS section below names them all.
+const TOP_SAAS_FINDINGS: usize = 3;
 const LEGACY_ROWS: usize = 5;
 
 /// Escapes text for HTML element content and attribute values.
@@ -37,7 +39,7 @@ header { display:flex; justify-content:space-between; align-items:flex-end; bord
 h1 { font-size:20px; margin:0; }
 h2 { font-size:13px; margin:14px 0 6px; color:var(--accent); }
 .meta { color:var(--muted); text-align:right; font-size:11px; }
-.tiles { display:grid; grid-template-columns:repeat(5,1fr); gap:6px; margin-top:10px; }
+.tiles { display:grid; grid-template-columns:repeat(6,1fr); gap:6px; margin-top:10px; }
 .tile { border:1px solid var(--line); border-radius:6px; padding:6px 8px; }
 .tile b { display:block; font-size:20px; }
 .tile.high b { color:var(--high); } .tile.medium b { color:var(--medium); } .tile.low b { color:var(--low); }
@@ -47,6 +49,8 @@ th { font-size:10.5px; color:var(--muted); font-weight:600; white-space:nowrap; 
 .sev { font-weight:700; white-space:nowrap; }
 .sev.high { color:var(--high); } .sev.medium { color:var(--medium); } .sev.low { color:var(--low); }
 .fix { color:var(--muted); }
+dl.saas { margin-bottom:4px; } dl.saas dt { font-weight:600; white-space:nowrap; }
+.no { color:var(--high); } .yes { color:var(--ok); }
 .cols { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
 dl { display:grid; grid-template-columns:auto 1fr; gap:2px 10px; margin:0; }
 dt { color:var(--muted); } dd { margin:0; }
@@ -127,6 +131,22 @@ pub fn write(report: &ScanReport, lang: Lang) -> String {
         format!("{}/{}", counts.programs_past_support, counts.programs),
         l.programs_past_support,
     ));
+    // "Not allowed" only when a company allowlist judged the SaaS: without
+    // one, or with one that could not be read, the tile counts what was found.
+    let judged = report.saas_check.allowlist.is_some() && !report.saas_check.allowlist_unreadable;
+    html.push_str(&if judged {
+        tile(
+            if counts.saas_not_allowed > 0 {
+                "medium"
+            } else {
+                ""
+            },
+            format!("{}/{}", counts.saas_not_allowed, counts.saas),
+            l.saas_not_allowed,
+        )
+    } else {
+        tile("", counts.saas.to_string(), l.saas_found)
+    });
     html.push_str("</div>");
 
     // Top risks
@@ -140,7 +160,20 @@ pub fn write(report: &ScanReport, lang: Lang) -> String {
             esc(l.risk),
             esc(l.fix)
         ));
-        for finding in report.findings.iter().take(TOP_FINDINGS) {
+        let mut saas_shown = 0;
+        let top: Vec<&Finding> = report
+            .findings
+            .iter()
+            .filter(|finding| {
+                if finding.area != Area::Saas {
+                    return true;
+                }
+                saas_shown += 1;
+                saas_shown <= TOP_SAAS_FINDINGS
+            })
+            .take(TOP_FINDINGS)
+            .collect();
+        for finding in &top {
             let evidence = copy::evidence(finding, lang);
             html.push_str(&format!(
                 "<tr><td class=\"sev {}\">{}</td><td><b>{}</b>{}</td><td class=\"fix\">{}</td></tr>",
@@ -156,7 +189,7 @@ pub fn write(report: &ScanReport, lang: Lang) -> String {
             ));
         }
         html.push_str("</tbody></table>");
-        let more = report.findings.len().saturating_sub(TOP_FINDINGS);
+        let more = report.findings.len().saturating_sub(top.len());
         if more > 0 {
             html.push_str(&format!(
                 "<p class=\"fix\">+{more}{} — {}</p>",
@@ -165,6 +198,74 @@ pub fn write(report: &ScanReport, lang: Lang) -> String {
             ));
         }
     }
+
+    // SaaS in use, grouped by the company's verdict (not allowed first), AI
+    // tools first within a group. The workbook's SaaS sheet has the detail.
+    html.push_str(&format!(
+        "<h2>{} ({})</h2>",
+        esc(l.saas_title),
+        report.saas.len()
+    ));
+    if report.saas.is_empty() {
+        html.push_str(&format!("<p>{}</p>", esc(l.saas_none)));
+    } else {
+        html.push_str("<dl class=\"saas\">");
+        for (verdict, class) in [(Some(false), "no"), (Some(true), "yes"), (None, "")] {
+            let mut group: Vec<_> = report
+                .saas
+                .iter()
+                .filter(|record| record.allowed == verdict)
+                .collect();
+            if group.is_empty() {
+                continue;
+            }
+            group.sort_by_key(|record| !record.ai);
+            let label = match verdict {
+                None => l.saas_found,
+                verdict => copy::saas_allowed(verdict, lang),
+            };
+            let names: Vec<String> = group
+                .iter()
+                .map(|record| {
+                    let mut notes = Vec::new();
+                    if record.ai {
+                        notes.push("AI".to_string());
+                    }
+                    if let Some(used) = record.browser {
+                        notes.push(format!("{}/30", used.days_used30));
+                    }
+                    if notes.is_empty() {
+                        record.product.clone()
+                    } else {
+                        format!("{} ({})", record.product, notes.join(", "))
+                    }
+                })
+                .collect();
+            html.push_str(&format!(
+                "<dt class=\"{class}\">{} ({})</dt><dd>{}</dd>",
+                esc(label),
+                group.len(),
+                esc(&names.join(if lang == Lang::Ja { "、" } else { ", " }))
+            ));
+        }
+        html.push_str("</dl>");
+    }
+    html.push_str(&format!(
+        "<p class=\"fix\">{} {}: {}. <span class=\"{}\">{}: {}</span></p>",
+        esc(l.saas_note),
+        esc(l.browser_check),
+        esc(&copy::browser_check(
+            report.saas_check.browsers.as_deref(),
+            lang
+        )),
+        if report.saas_check.allowlist_unreadable {
+            "no"
+        } else {
+            ""
+        },
+        esc(l.allowlist),
+        esc(&copy::allowlist_line(&report.saas_check, lang))
+    ));
 
     // Device and checks
     html.push_str("<div class=\"cols\"><section>");
@@ -245,6 +346,19 @@ pub fn write(report: &ScanReport, lang: Lang) -> String {
         }
         html.push_str("</tbody></table>");
     }
+    let migratable: Vec<&str> = report
+        .saas
+        .iter()
+        .filter(|record| record.migrate.is_some())
+        .map(|record| record.product.as_str())
+        .collect();
+    if !migratable.is_empty() {
+        html.push_str(&format!(
+            "<p><b>{}:</b> {} (sanka.com/migrate/)</p>",
+            esc(l.saas_migrate),
+            esc(&migratable.join(if lang == Lang::Ja { "、" } else { ", " }))
+        ));
+    }
     html.push_str(&format!(
         "<p class=\"cta\">{}</p></section>",
         esc(l.assessment)
@@ -279,6 +393,51 @@ mod tests {
         for external in ["src=", "href=", "@import", "url("] {
             assert!(!html.contains(external), "{external}");
         }
+    }
+
+    #[test]
+    fn the_page_lists_the_saas_not_allowed_first() {
+        let report = fixtures::windows_report_with_saas();
+        for lang in [Lang::En, Lang::Ja] {
+            let html = write(&report, lang);
+            let section = html
+                .split(&esc(copy::labels(lang).saas_title))
+                .nth(1)
+                .unwrap();
+            let chatgpt = section.find("ChatGPT (AI").unwrap();
+            let slack = section.find("Slack").unwrap();
+            assert!(chatgpt < slack, "{lang:?}");
+            assert!(html.contains("Salesforce"), "{lang:?}");
+            for external in ["src=", "href=", "@import", "url("] {
+                assert!(!html.contains(external), "{external}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_allowlist_that_could_not_be_read_is_said_not_hidden() {
+        let mut report = fixtures::windows_report_with_saas();
+        report.set_allowlist(monitor_saas::SaasCatalog::bundled(), None);
+        report.saas_check.allowlist_unreadable = true;
+        for lang in [Lang::En, Lang::Ja] {
+            let l = copy::labels(lang);
+            let html = write(&report, lang);
+            assert!(
+                html.contains(&esc(&copy::allowlist_line(&report.saas_check, lang))),
+                "{lang:?}"
+            );
+            // The tile counts the SaaS found; it does not claim none is not allowed.
+            assert!(
+                html.contains(&format!("<b>4</b>{}", esc(l.saas_found))),
+                "{lang:?}"
+            );
+            assert!(!html.contains(&esc(l.saas_not_allowed)), "{lang:?}");
+        }
+        // With a list that was read, the tile judges and the note names the list.
+        let judged = fixtures::windows_report_with_saas();
+        let html = write(&judged, Lang::En);
+        assert!(html.contains("<b>2/4</b>SaaS not allowed"));
+        assert!(html.contains("Example K.K."));
     }
 
     #[test]

@@ -2371,6 +2371,7 @@ dependencies = [
  "chrono",
  "monitor-inventory",
  "monitor-posture",
+ "monitor-saas",
  "regex",
  "serde",
  "serde_json",
@@ -2404,11 +2405,24 @@ dependencies = [
  "monitor-findings",
  "monitor-inventory",
  "monitor-posture",
+ "monitor-saas",
  "rust_xlsxwriter",
  "serde",
  "serde_json",
  "uuid",
  "zip 9.0.5",
+]
+
+[[package]]
+name = "monitor-saas"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "monitor-inventory",
+ "regex",
+ "rusqlite",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -3602,6 +3616,7 @@ dependencies = [
  "monitor-inventory",
  "monitor-posture",
  "monitor-report",
+ "monitor-saas",
  "monitor-store",
  "monitor-sync",
  "monitor-usage",

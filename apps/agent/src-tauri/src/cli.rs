@@ -2,7 +2,8 @@
 //! Policy, any scheduler):
 //!
 //! ```text
-//! sanka-monitor-agent scan --out <folder> [--format csv,xlsx,html|all] [--lang ja|en]
+//! sanka-monitor-agent scan --out <folder> [--format csv,xlsx,html|all] [--lang ja|en] [--allowlist <file>]
+//! sanka-monitor-agent saas-catalog
 //! ```
 //!
 //! It scans the device and writes one file per format to the folder, named
@@ -13,12 +14,20 @@
 //! updater or background work, reads and writes no app data, and sends
 //! nothing anywhere.
 //!
-//! Exit codes: 0 written, 1 a file could not be written, 2 bad arguments.
+//! The SaaS it lists come from installed desktop apps only: it never reads
+//! browser history, because device management runs it without the person.
+//! The company allowlist is `--allowlist <file>`, else the machine-wide file
+//! device management places (`monitor_saas::allowlist::machine_path`).
+//! `saas-catalog` prints the catalog's keys, for writing that file.
+//!
+//! Exit codes: 0 written, 1 a file could not be written, 2 bad arguments or
+//! an allowlist that cannot be read.
 
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
-use monitor_report::{device_file_key, Lang, ScanReport};
+use monitor_report::{copy, device_file_key, Lang, ScanReport};
+use monitor_saas::{Allowlist, AllowlistOrigin, SaasCatalog};
 
 use crate::agent::AGENT_VERSION;
 
@@ -26,20 +35,35 @@ const USAGE: &str = "Sanka Monitor command-line scan
 
 Usage:
   sanka-monitor-agent scan --out <folder> [--format csv,xlsx,html|all] [--lang ja|en]
+                           [--allowlist <file>]
+  sanka-monitor-agent saas-catalog
 
 Scans this computer and writes its report to <folder>, one file per format,
 named <computer>_<serial>.<ext>. A later scan replaces the computer's file.
 Nothing is sent anywhere.
 
-Options:
-  --out <folder>     Where to write (created if missing). A network share works.
-  --format <list>    csv (default), xlsx, html, or all. Comma-separated.
-  --lang <ja|en>     Language of the xlsx and html reports (default: from LANG,
-                     else en). The CSV has both languages.
-  -h, --help         Show this help.
-  -V, --version      Show the version.
+The report lists the SaaS whose desktop apps are installed. The command line
+never reads browser history; the browser check is the person's choice in the
+app. With a company allowlist, SaaS that are not on it are flagged as risks.
 
-Exit codes: 0 written, 1 a file could not be written, 2 bad arguments.
+Options:
+  --out <folder>       Where to write (created if missing). A network share works.
+  --format <list>      csv (default), xlsx, html, or all. Comma-separated.
+  --lang <ja|en>       Language of the xlsx and html reports (default: from LANG,
+                       else en). The CSV has both languages.
+  --allowlist <file>   The company's allowed SaaS (JSON). Default: the file device
+                       management places at
+                         macOS:   /Library/Application Support/Sanka Monitor/allowlist.json
+                         Windows: %ProgramData%\\Sanka Monitor\\allowlist.json
+  -h, --help           Show this help.
+  -V, --version        Show the version.
+
+saas-catalog prints every SaaS the catalog knows (key, name, vendor, category,
+AI, Sanka migration page) as CSV. An allowlist names the allowed ones by key:
+  {\"schemaVersion\": 1, \"name\": \"Example K.K.\", \"allowed\": [\"slack\", \"zoom\"]}
+
+Exit codes: 0 written, 1 a file could not be written, 2 bad arguments or an
+allowlist that cannot be read.
 ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,11 +88,13 @@ pub struct ScanArgs {
     pub out: PathBuf,
     pub formats: Vec<Format>,
     pub lang: Lang,
+    pub allowlist: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     Scan(ScanArgs),
+    SaasCatalog,
     Help,
     Version,
 }
@@ -78,6 +104,7 @@ pub enum Command {
 pub fn parse(args: &[String], env_lang: Option<&str>) -> Option<Result<Command, String>> {
     match args.get(1).map(String::as_str) {
         Some("scan") => Some(parse_scan(&args[2..], env_lang).map(Command::Scan)),
+        Some("saas-catalog") => Some(Ok(Command::SaasCatalog)),
         Some("-h" | "--help" | "help") => Some(Ok(Command::Help)),
         Some("-V" | "--version") => Some(Ok(Command::Version)),
         _ => None,
@@ -86,6 +113,7 @@ pub fn parse(args: &[String], env_lang: Option<&str>) -> Option<Result<Command, 
 
 fn parse_scan(args: &[String], env_lang: Option<&str>) -> Result<ScanArgs, String> {
     let mut out = None;
+    let mut allowlist = None;
     let mut formats = vec![Format::Csv];
     let mut lang = env_lang.map(Lang::from_tag).unwrap_or_default();
     let mut rest = args.iter();
@@ -103,6 +131,7 @@ fn parse_scan(args: &[String], env_lang: Option<&str>) -> Result<ScanArgs, Strin
         };
         match flag {
             "--out" => out = Some(PathBuf::from(value("--out")?)),
+            "--allowlist" => allowlist = Some(PathBuf::from(value("--allowlist")?)),
             "--format" => {
                 formats = Vec::new();
                 for name in value("--format")?.split(',').map(str::trim) {
@@ -132,7 +161,52 @@ fn parse_scan(args: &[String], env_lang: Option<&str>) -> Result<ScanArgs, Strin
         }
     }
     let out = out.ok_or("--out <folder> is required")?;
-    Ok(ScanArgs { out, formats, lang })
+    Ok(ScanArgs {
+        out,
+        formats,
+        lang,
+        allowlist,
+    })
+}
+
+/// The allowlist a command-line scan uses: `--allowlist`, which must be
+/// readable, else the machine-wide file if there is one.
+pub fn scan_allowlist(args: &ScanArgs) -> Result<Option<Allowlist>, String> {
+    let catalog = SaasCatalog::bundled();
+    if let Some(path) = &args.allowlist {
+        return Allowlist::read(path, catalog, AllowlistOrigin::CommandLine).map(Some);
+    }
+    let machine: Vec<(PathBuf, AllowlistOrigin)> = monitor_saas::allowlist::machine_path()
+        .map(|path| (path, AllowlistOrigin::Machine))
+        .into_iter()
+        .collect();
+    monitor_saas::allowlist::find(&machine, catalog).transpose()
+}
+
+/// The catalog as CSV: what an allowlist can name.
+pub fn saas_catalog_csv() -> String {
+    let quote = |cell: &str| {
+        if cell.contains([',', '"']) {
+            format!("\"{}\"", cell.replace('"', "\"\""))
+        } else {
+            cell.to_string()
+        }
+    };
+    let mut out = String::from("key,product,vendor,category,ai,sanka_migrate_url\n");
+    for entry in SaasCatalog::bundled().entries() {
+        let cells = [
+            entry.key.clone(),
+            entry.product.clone(),
+            entry.vendor.clone(),
+            copy::saas_category(entry.category, Lang::En).to_string(),
+            entry.ai.to_string(),
+            entry.migrate_url("en").unwrap_or_default(),
+        ];
+        let line: Vec<String> = cells.iter().map(|cell| quote(cell)).collect();
+        out.push_str(&line.join(","));
+        out.push('\n');
+    }
+    out
 }
 
 /// Encodes the report in `format`.
@@ -198,12 +272,30 @@ pub fn run(command: Result<Command, String>) -> i32 {
             println!("Sanka Monitor {AGENT_VERSION}");
             0
         }
+        Ok(Command::SaasCatalog) => {
+            print!("{}", saas_catalog_csv());
+            0
+        }
         Err(err) => {
             eprintln!("sanka-monitor: {err}\n\n{USAGE}");
             2
         }
         Ok(Command::Scan(args)) => {
-            let report = crate::scan::run_scan(Utc::now());
+            let allowlist = match scan_allowlist(&args) {
+                Ok(list) => list,
+                Err(err) => {
+                    eprintln!("sanka-monitor: {err}");
+                    return 2;
+                }
+            };
+            if let Some(list) = allowlist.as_ref().filter(|l| !l.unknown.is_empty()) {
+                eprintln!(
+                    "sanka-monitor: warning: the allowlist names SaaS the catalog does not know: {}",
+                    list.unknown.join(", ")
+                );
+            }
+            let mut report = crate::scan::run_scan(Utc::now());
+            report.set_saas(SaasCatalog::bundled(), None, allowlist.as_ref());
             if report.software.is_empty() {
                 eprintln!("sanka-monitor: warning: no installed software could be read");
             }
@@ -214,12 +306,14 @@ pub fn run(command: Result<Command, String>) -> i32 {
                         println!("{}", path.display());
                     }
                     println!(
-                        "{}: {} high, {} medium, {} low risks; {} programs",
+                        "{}: {} high, {} medium, {} low risks; {} programs; {} SaaS ({} not allowed)",
                         report.device.hostname,
                         counts.high,
                         counts.medium,
                         counts.low,
-                        counts.programs
+                        counts.programs,
+                        counts.saas,
+                        counts.saas_not_allowed
                     );
                     0
                 }
@@ -251,6 +345,7 @@ mod tests {
                 out: PathBuf::from(out),
                 formats,
                 lang,
+                allowlist: None,
             })))
         };
         for (list, env, parsed) in [
@@ -278,6 +373,23 @@ mod tests {
             ),
             (vec!["--help"], None, Some(Ok(Command::Help))),
             (vec!["-V"], None, Some(Ok(Command::Version))),
+            (vec!["saas-catalog"], None, Some(Ok(Command::SaasCatalog))),
+            (
+                vec![
+                    "scan",
+                    "--out",
+                    "out",
+                    "--allowlist",
+                    r"\\fs01\it\allowlist.json",
+                ],
+                None,
+                Some(Ok(Command::Scan(ScanArgs {
+                    out: PathBuf::from("out"),
+                    formats: vec![Format::Csv],
+                    lang: Lang::En,
+                    allowlist: Some(PathBuf::from(r"\\fs01\it\allowlist.json")),
+                }))),
+            ),
         ] {
             assert_eq!(parse(&args(&list), env), parsed, "{list:?}");
         }
@@ -287,9 +399,42 @@ mod tests {
             vec!["scan", "--out", "x", "--format", "pdf"],
             vec!["scan", "--out", "x", "--lang", "fr"],
             vec!["scan", "--out", "x", "--verbose"],
+            vec!["scan", "--out", "x", "--allowlist"],
         ] {
             assert!(matches!(parse(&args(&bad), None), Some(Err(_))), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn a_given_allowlist_must_be_readable_and_the_catalog_lists_every_key() {
+        let args = |allowlist: Option<PathBuf>| ScanArgs {
+            out: PathBuf::from("out"),
+            formats: vec![Format::Csv],
+            lang: Lang::En,
+            allowlist,
+        };
+        let dir = std::env::temp_dir().join(format!("monitor-cli-allow-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let good = dir.join("allowlist.json");
+        std::fs::write(
+            &good,
+            r#"{"schemaVersion": 1, "allowed": ["slack", "nope"]}"#,
+        )
+        .unwrap();
+        let list = scan_allowlist(&args(Some(good))).unwrap().unwrap();
+        assert_eq!(list.origin, AllowlistOrigin::CommandLine);
+        assert_eq!(list.unknown, ["nope"]);
+        assert!(scan_allowlist(&args(Some(dir.join("missing.json")))).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+
+        let csv = saas_catalog_csv();
+        let lines: Vec<&str> = csv.lines().collect();
+        assert_eq!(lines[0], "key,product,vendor,category,ai,sanka_migrate_url");
+        assert_eq!(lines.len(), SaasCatalog::bundled().entries().len() + 1);
+        assert!(lines
+            .iter()
+            .any(|line| line.starts_with("salesforce,Salesforce,")
+                && line.ends_with("https://sanka.com/migrate/salesforce/")));
     }
 
     #[test]

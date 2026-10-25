@@ -2,8 +2,10 @@
 
 mod account;
 mod agent;
+mod checks;
 mod cli;
 mod reports;
+mod saas;
 mod scan;
 mod updates;
 mod usage;
@@ -77,6 +79,13 @@ fn main() {
             account::finish_sign_in,
             account::cancel_sign_in,
             account::sign_out,
+            saas::get_saas_settings,
+            saas::set_browser_check,
+            saas::choose_allowlist,
+            saas::clear_allowlist,
+            saas::open_migration_page,
+            checks::set_check_schedule,
+            checks::dismiss_nudges,
         ])
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "Open Sanka Monitor", true, None::<&str>)?;
@@ -110,9 +119,11 @@ fn main() {
             if agent::enable_autostart_once(&handle, &mut config) {
                 let _ = agent::save_config(&handle, &config);
             }
-            // Enrolled, or still owing the workspace a revoke after Disconnect:
-            // either way the login item starts it with work to do.
-            let has_work = config.enrolled() || !config.pending_revokes.is_empty();
+            // Enrolled, still owing the workspace a revoke after Disconnect, or
+            // running regular checks: the login item starts it with work to do.
+            let has_work = config.enrolled()
+                || !config.pending_revokes.is_empty()
+                || config.check_schedule.is_some();
             let collecting = config.collecting();
             tauri::async_runtime::block_on(async {
                 let state: tauri::State<'_, agent::AgentState> = handle.state();
@@ -139,6 +150,7 @@ fn main() {
 
             agent::spawn_checkin_loop(handle.clone());
             agent::spawn_revoke_loop(handle.clone());
+            checks::spawn_schedule_loop(handle.clone());
             updates::spawn_update_loop(handle.clone());
             // The browser hands a sign-in back through sanka-monitor://.
             account::register_deep_links(&handle);

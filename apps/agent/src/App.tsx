@@ -4,10 +4,19 @@ import { listen } from "@tauri-apps/api/event";
 import { ConnectPane } from "./ConnectPane";
 import { STRINGS, systemLang } from "./i18n";
 import { PrivacyPane } from "./PrivacyPane";
+import { Nudges, RegularChecks, SaasPane } from "./SaasPane";
 import { ScanPane, SoftwarePane } from "./ScanPane";
-import type { Account, Lang, SavedReport, ScanView, SentPayload, Status } from "./types";
+import type {
+  Account,
+  Lang,
+  SaasSettings,
+  SavedReport,
+  ScanView,
+  SentPayload,
+  Status,
+} from "./types";
 
-type Tab = "scan" | "software" | "connect" | "privacy";
+type Tab = "scan" | "software" | "saas" | "connect" | "privacy";
 
 // The app's language, which the reports follow too.
 const LANG_KEY = "sanka-monitor.report-lang";
@@ -33,6 +42,10 @@ export default function App() {
   const [scanning, setScanning] = useState(false);
   const [saved, setSaved] = useState<SavedReport[]>([]);
   const [account, setAccount] = useState<Account | null>(null);
+  const [saas, setSaas] = useState<SaasSettings | null>(null);
+  // undefined until the settings first load; then the last regular check's
+  // time, or null before the first one.
+  const lastRegularCheck = useRef<string | null | undefined>(undefined);
   const scanned = useRef(false);
   const s = STRINGS[lang];
 
@@ -67,6 +80,32 @@ export default function App() {
       unlisten.then((stop) => stop()).catch(() => {});
     };
   }, [refresh]);
+
+  // The scan the app holds, again: after the browser check or the allowlist
+  // changed it, or after a regular check replaced it.
+  const refreshScan = useCallback(() => {
+    invoke<ScanView | null>("get_scan", { lang })
+      .then((view) => view && setScan(view))
+      .catch(() => {});
+  }, [lang]);
+
+  // SaaS settings and regular-check nudges; a regular check that ran since
+  // the last look brings its scan with it.
+  useEffect(() => {
+    const load = () =>
+      invoke<SaasSettings>("get_saas_settings", { lang })
+        .then((next) => {
+          setSaas(next);
+          if (next.lastScheduledCheckAt !== lastRegularCheck.current) {
+            if (lastRegularCheck.current !== undefined) refreshScan();
+            lastRegularCheck.current = next.lastScheduledCheckAt;
+          }
+        })
+        .catch(() => {});
+    load();
+    const timer = setInterval(load, 30_000);
+    return () => clearInterval(timer);
+  }, [lang, refreshScan]);
 
   const runScan = useCallback(async () => {
     setScanning(true);
@@ -148,6 +187,7 @@ export default function App() {
   const tabs: { key: Tab; label: string }[] = [
     { key: "scan", label: s.tabs.scan },
     { key: "software", label: s.tabs.software },
+    { key: "saas", label: s.tabs.saas },
     { key: "connect", label: status.enrolled ? s.tabs.workspace : s.tabs.connect },
     { key: "privacy", label: s.tabs.privacy },
   ];
@@ -179,21 +219,45 @@ export default function App() {
 
       {error ? <p className="error">{error}</p> : null}
 
+      <Nudges s={s} lang={lang} settings={saas} onSettings={setSaas} setError={setError} />
+
       {tab === "scan" ? (
-        <ScanPane
-          s={s}
-          scan={scan}
-          scanning={scanning}
-          lang={lang}
-          onScan={runScan}
-          saved={saved}
-          onSaved={setSaved}
-          account={account}
-          onAccount={setAccount}
-          setError={setError}
-        />
+        <>
+          <ScanPane
+            s={s}
+            scan={scan}
+            scanning={scanning}
+            lang={lang}
+            onScan={runScan}
+            saved={saved}
+            onSaved={setSaved}
+            account={account}
+            onAccount={setAccount}
+            setError={setError}
+          />
+          <RegularChecks
+            s={s}
+            lang={lang}
+            settings={saas}
+            onSettings={setSaas}
+            setError={setError}
+          />
+        </>
       ) : null}
       {tab === "software" ? <SoftwarePane s={s} scan={scan} /> : null}
+      {tab === "saas" ? (
+        <SaasPane
+          s={s}
+          lang={lang}
+          scan={scan}
+          scanning={scanning}
+          settings={saas}
+          onSettings={setSaas}
+          setError={setError}
+          onScan={runScan}
+          onScanChanged={refreshScan}
+        />
+      ) : null}
       {tab === "connect" ? (
         <ConnectPane
           s={s}
@@ -215,6 +279,13 @@ export default function App() {
           busy={busy}
           run={run}
           refresh={refresh}
+          scan={scan}
+          scanning={scanning}
+          saas={saas}
+          onSaas={setSaas}
+          onScan={runScan}
+          onScanChanged={refreshScan}
+          setError={setError}
         />
       ) : null}
     </main>

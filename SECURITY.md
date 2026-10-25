@@ -30,6 +30,15 @@ privacy permission.
   request is the update check, which downloads `latest.json` from the release feed
   and sends nothing about the computer. Updates are verified against the updater
   public key in `apps/agent/src-tauri/tauri.conf.json` before they install.
+- **Browser check (opt-in).** Off until the person turns it on in the app. Then a
+  scan opens the Chrome, Edge and Firefox history files read-only in place in
+  SQLite's `immutable` mode (no copy, no lock, no side files), keeps only each
+  visit's host name and day in memory, and keeps per SaaS in the catalog the last
+  day used and the days used in the last 30. Those two values appear in reports
+  the person saves, and so leave the computer only with a report the person sends. Safari is read only when the app
+  already has Full Disk Access, which it never requests. Web addresses, page titles
+  and history are never stored, written to a report or sent. The command-line scan
+  never reads browser history.
 - **Reports.** Excel, CSV and HTML reports are written only where the person
   chooses. Text read from the device (computer and program names) is written as
   values, never as formulas or markup: CSV cells that Excel would run are prefixed

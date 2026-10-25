@@ -11,6 +11,7 @@ repository.workspace = true
 chrono = { workspace = true }
 monitor-inventory = { path = "../monitor-inventory" }
 monitor-posture = { path = "../monitor-posture" }
+monitor-saas = { path = "../monitor-saas" }
 # Already in the build through tauri. The catalog's patterns use no lookaround.
 regex = "1"
 serde = { workspace = true }
