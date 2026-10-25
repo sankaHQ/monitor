@@ -17,7 +17,6 @@ rust_xlsxwriter = { version = "0.100", default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
-
-[dev-dependencies]
-# Reads the workbook back in tests; already in the build through the updater.
-zip = { version = "4", default-features = false, features = ["deflate"] }
+# Reads a ledger back to tell a Sanka Monitor workbook (and, in tests, what it
+# holds); the version rust_xlsxwriter already writes with.
+zip = { version = "9", default-features = false, features = ["deflate"] }

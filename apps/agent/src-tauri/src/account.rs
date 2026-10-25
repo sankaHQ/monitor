@@ -1,0 +1,474 @@
+//! Signing in with a Sanka account to send reports.
+//!
+//! Scanning and saving reports need no account; only "Send to Sanka" does.
+//! The app opens `<app base>/desktop/monitor/connect?challenge&state&platform`
+//! in the system browser (RFC 8252: browser + PKCE, as Sanka Recorder). The
+//! person signs in, or creates a free account, picks the workspace to send as
+//! and approves; the page hands a one-time code back through
+//! `sanka-monitor://auth/callback?code&state`, or the person pastes it. The
+//! app exchanges the code and its verifier for a device credential, kept in
+//! the OS keychain, and the credential for a one-hour token just before it
+//! sends.
+//!
+//! Signing in sends Sanka the code, the verifier, the app version and the
+//! platform: no computer name and nothing from the scan. The credential only
+//! sends reports; it is not the connected mode's enrollment. Sign out revokes
+//! it on the server when it can, and always forgets it here.
+
+use std::time::{Duration, Instant};
+
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
+use monitor_core::DEEP_LINK_SCHEME;
+use monitor_report::Lang;
+use monitor_sync::{
+    AgentClient, DesktopEndpoint, DesktopSignInRequest, DesktopTokenRequest, SyncError,
+    DESKTOP_INVALID_GRANT,
+};
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+use tauri::{AppHandle, Emitter as _, Manager, State};
+use tauri_plugin_opener::OpenerExt as _;
+
+use crate::agent::{save_config, AccountConfig, AgentState, AGENT_VERSION, KEYRING_SERVICE};
+
+/// Where the connect page lives: the Monitor host, which is also the Monitor
+/// sign-up door. Overridable via `appBase` in config.json.
+pub const DEFAULT_APP_BASE: &str = "https://monitor.sanka.com";
+/// The window hears about a sign-in that finished in the browser.
+pub const ACCOUNT_EVENT: &str = "account-changed";
+const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+/// A token this close to expiring is replaced before a send.
+const TOKEN_MARGIN: Duration = Duration::from_secs(60);
+
+/// A sign-in the person started that the browser has not answered yet.
+pub struct PendingSignIn {
+    verifier: String,
+    state: String,
+    started: Instant,
+}
+
+/// The account as the window shows it.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountView {
+    pub signed_in: bool,
+    pub user_name: Option<String>,
+    pub user_email: Option<String>,
+    pub workspace_name: Option<String>,
+    /// A sign-in is waiting for the browser.
+    pub signing_in: bool,
+    /// Why the last sign-in from the browser failed.
+    pub error: Option<String>,
+}
+
+fn random_token(bytes: usize) -> Result<String, String> {
+    let mut buffer = vec![0u8; bytes];
+    getrandom::fill(&mut buffer).map_err(|err| err.to_string())?;
+    Ok(URL_SAFE_NO_PAD.encode(buffer))
+}
+
+/// RFC 7636 S256.
+pub fn challenge_for(verifier: &str) -> String {
+    URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
+}
+
+fn platform() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "windows"
+    } else {
+        "macos"
+    }
+}
+
+/// The connect page in the window's language.
+pub fn connect_url(app_base: &str, lang: Lang, challenge: &str, state: &str) -> String {
+    let prefix = match lang {
+        Lang::Ja => "/ja",
+        Lang::En => "",
+    };
+    let mut url = url::Url::parse(&format!(
+        "{}{prefix}/desktop/monitor/connect",
+        app_base.trim_end_matches('/')
+    ))
+    .expect("the app base is a URL");
+    url.query_pairs_mut()
+        .append_pair("challenge", challenge)
+        .append_pair("state", state)
+        .append_pair("platform", platform());
+    url.into()
+}
+
+/// `sanka-monitor://auth/callback?code=…&state=…`, or nothing for any other link.
+pub fn callback_params(raw: &str) -> Option<(String, String)> {
+    let url = url::Url::parse(raw).ok()?;
+    if url.scheme() != DEEP_LINK_SCHEME
+        || url.host_str() != Some("auth")
+        || url.path() != "/callback"
+    {
+        return None;
+    }
+    let param = |name: &str| {
+        url.query_pairs()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.into_owned())
+            .filter(|value| !value.is_empty())
+    };
+    Some((param("code")?, param("state")?))
+}
+
+fn keyring_entry(device_id: &str) -> Result<keyring::Entry, String> {
+    keyring::Entry::new(KEYRING_SERVICE, &format!("account:{device_id}"))
+        .map_err(|err| err.to_string())
+}
+
+async fn store_secret(device_id: String, secret: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        keyring_entry(&device_id)?
+            .set_password(&secret)
+            .map_err(|err| format!("could not save the sign-in in the keychain: {err}"))
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+async fn read_secret(device_id: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        keyring_entry(&device_id)?
+            .get_password()
+            .map_err(|err| format!("the sign-in is missing from the keychain: {err}"))
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+async fn delete_secret(device_id: String) {
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        keyring_entry(&device_id)
+            .and_then(|entry| entry.delete_credential().map_err(|err| err.to_string()))
+    })
+    .await;
+}
+
+pub async fn account_view(app: &AppHandle) -> AccountView {
+    let state: State<'_, AgentState> = app.state();
+    let account = state.config.lock().await.account.clone();
+    let signing_in = state
+        .pending_sign_in
+        .lock()
+        .await
+        .as_ref()
+        .is_some_and(|pending| pending.started.elapsed() < SIGN_IN_TIMEOUT);
+    let error = state.account_error.lock().await.clone();
+    match account {
+        Some(account) => AccountView {
+            signed_in: true,
+            user_name: account.user_name,
+            user_email: account.user_email,
+            workspace_name: account.workspace_name,
+            signing_in: false,
+            error,
+        },
+        None => AccountView {
+            signing_in,
+            error,
+            ..AccountView::default()
+        },
+    }
+}
+
+#[tauri::command]
+pub async fn get_account(app: AppHandle) -> AccountView {
+    account_view(&app).await
+}
+
+/// Opens the connect page in the system browser.
+#[tauri::command]
+pub async fn begin_sign_in(app: AppHandle, lang: Lang) -> Result<AccountView, String> {
+    let state: State<'_, AgentState> = app.state();
+    let verifier = random_token(64)?;
+    let nonce = random_token(16)?;
+    let app_base = state.config.lock().await.app_base();
+    let url = connect_url(&app_base, lang, &challenge_for(&verifier), &nonce);
+    *state.pending_sign_in.lock().await = Some(PendingSignIn {
+        verifier,
+        state: nonce,
+        started: Instant::now(),
+    });
+    *state.account_error.lock().await = None;
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|err| format!("could not open the browser: {err}"))?;
+    Ok(account_view(&app).await)
+}
+
+/// The code the person pasted, when the browser did not hand it back.
+#[tauri::command]
+pub async fn finish_sign_in(app: AppHandle, code: String) -> Result<AccountView, String> {
+    complete(&app, code.trim(), None).await?;
+    Ok(account_view(&app).await)
+}
+
+#[tauri::command]
+pub async fn cancel_sign_in(app: AppHandle) -> AccountView {
+    *app.state::<AgentState>().pending_sign_in.lock().await = None;
+    account_view(&app).await
+}
+
+/// The code from `sanka-monitor://auth/callback` (with its state) or pasted.
+async fn complete(app: &AppHandle, code: &str, returned_state: Option<&str>) -> Result<(), String> {
+    let state: State<'_, AgentState> = app.state();
+    let verifier = {
+        let pending = state.pending_sign_in.lock().await;
+        let pending = pending
+            .as_ref()
+            .filter(|pending| pending.started.elapsed() < SIGN_IN_TIMEOUT)
+            .ok_or("Start the sign-in from Sanka Monitor again.")?;
+        if returned_state.is_some_and(|returned| returned != pending.state) {
+            return Err("This sign-in link belongs to another attempt. Start again.".into());
+        }
+        pending.verifier.clone()
+    };
+    if code.is_empty() {
+        return Err("Paste the sign-in code from the browser.".into());
+    }
+    let api_base = state.config.lock().await.api_base();
+    let client = AgentClient::new(api_base, AGENT_VERSION).map_err(|err| err.to_string())?;
+    let request = DesktopSignInRequest {
+        code: code.to_string(),
+        code_verifier: verifier,
+        platform: platform().to_string(),
+        app_version: AGENT_VERSION.to_string(),
+    };
+    // Listed in the Privacy pane like every other request, without the secrets.
+    let request_id = state
+        .record_payload(
+            &DesktopEndpoint::Devices.path(),
+            serde_json::json!({
+                "code": "(one-time sign-in code)",
+                "codeVerifier": "(this app's PKCE verifier)",
+                "platform": request.platform,
+                "appVersion": request.app_version,
+            }),
+        )
+        .await;
+    let signed_in = client
+        .desktop_sign_in(&request)
+        .await
+        .map_err(|err| match err.code() {
+            Some(DESKTOP_INVALID_GRANT) => {
+                "The sign-in code is invalid or expired. Sign in again.".to_string()
+            }
+            _ => format!("Sign-in failed: {err}"),
+        })?;
+    state.mark_payload_delivered(request_id).await;
+    store_secret(signed_in.device_id.clone(), signed_in.device_secret.clone()).await?;
+    let previous = {
+        let mut config = state.config.lock().await;
+        let mut next = config.clone();
+        let previous = next.account.replace(AccountConfig {
+            device_id: signed_in.device_id.clone(),
+            user_name: signed_in.user.name.clone(),
+            user_email: signed_in.user.email.clone(),
+            workspace_name: signed_in.workspace.name.clone(),
+            workspace_code: signed_in.workspace.code.clone(),
+        });
+        save_config(app, &next)?;
+        *config = next;
+        previous
+    };
+    if let Some(previous) = previous.filter(|p| p.device_id != signed_in.device_id) {
+        delete_secret(previous.device_id).await;
+    }
+    *state.pending_sign_in.lock().await = None;
+    *state.account_token.lock().await = None;
+    *state.account_error.lock().await = None;
+    Ok(())
+}
+
+/// A link to `sanka-monitor://…` opened the app, or reached the running one.
+pub fn handle_deep_link(app: &AppHandle, raw: &str) {
+    let Some((code, returned_state)) = callback_params(raw) else {
+        return;
+    };
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let result = complete(&handle, &code, Some(&returned_state)).await;
+        let state: State<'_, AgentState> = handle.state();
+        *state.account_error.lock().await = result.err();
+        let view = account_view(&handle).await;
+        let _ = handle.emit(ACCOUNT_EVENT, view);
+        crate::show_main_window(&handle);
+    });
+}
+
+/// A runtime token for sending, refreshed under one lock so that parallel
+/// sends never race for it.
+pub async fn access_token(app: &AppHandle) -> Result<String, SyncError> {
+    let state: State<'_, AgentState> = app.state();
+    let mut cached = state.account_token.lock().await;
+    if let Some((token, expires)) = cached.as_ref() {
+        if *expires > Instant::now() + TOKEN_MARGIN {
+            return Ok(token.clone());
+        }
+    }
+    let (api_base, account) = {
+        let config = state.config.lock().await;
+        (config.api_base(), config.account.clone())
+    };
+    let account = account.ok_or_else(not_signed_in)?;
+    let secret = read_secret(account.device_id.clone())
+        .await
+        .map_err(|message| SyncError::Api {
+            status: 401,
+            code: Some(monitor_sync::DESKTOP_DEVICE_INVALID.to_string()),
+            message,
+        })?;
+    let client = AgentClient::new(api_base, AGENT_VERSION)?;
+    let data = client
+        .desktop_token(&DesktopTokenRequest {
+            device_id: account.device_id,
+            device_secret: secret,
+            app_version: AGENT_VERSION.to_string(),
+        })
+        .await?;
+    let token = data.access_token.clone();
+    *cached = Some((
+        data.access_token,
+        Instant::now() + Duration::from_secs(data.expires_in),
+    ));
+    Ok(token)
+}
+
+fn not_signed_in() -> SyncError {
+    SyncError::Api {
+        status: 401,
+        code: Some(monitor_sync::DESKTOP_DEVICE_INVALID.to_string()),
+        message: "Sign in to Sanka to send reports.".into(),
+    }
+}
+
+pub async fn forget_token(app: &AppHandle) {
+    *app.state::<AgentState>().account_token.lock().await = None;
+}
+
+/// Forgets the account here: the keychain secret, the names and any token.
+pub async fn forget_account(app: &AppHandle) -> Result<(), String> {
+    let state: State<'_, AgentState> = app.state();
+    let previous = {
+        let mut config = state.config.lock().await;
+        let mut next = config.clone();
+        let previous = next.account.take();
+        save_config(app, &next)?;
+        *config = next;
+        previous
+    };
+    *state.account_token.lock().await = None;
+    if let Some(previous) = previous {
+        delete_secret(previous.device_id).await;
+    }
+    Ok(())
+}
+
+/// Sign out: revokes the credential in Sanka when it can, then forgets it.
+#[tauri::command]
+pub async fn sign_out(app: AppHandle) -> Result<AccountView, String> {
+    if let Ok(token) = access_token(&app).await {
+        let api_base = app.state::<AgentState>().config.lock().await.api_base();
+        if let Ok(client) = AgentClient::new(api_base, AGENT_VERSION) {
+            // Without the network the secret is still deleted here, so it cannot send.
+            let _ =
+                tokio::time::timeout(Duration::from_secs(15), client.desktop_revoke(&token)).await;
+        }
+    }
+    forget_account(&app).await?;
+    *app.state::<AgentState>().account_error.lock().await = None;
+    Ok(account_view(&app).await)
+}
+
+pub fn register_deep_links(app: &AppHandle) {
+    use tauri_plugin_deep_link::DeepLinkExt as _;
+    #[cfg(any(windows, target_os = "linux"))]
+    {
+        // Installers register the scheme; a development run registers it here.
+        let _ = app.deep_link().register_all();
+    }
+    let handle = app.clone();
+    app.deep_link().on_open_url(move |event| {
+        for url in event.urls() {
+            handle_deep_link(&handle, url.as_str());
+        }
+    });
+    if let Ok(Some(urls)) = app.deep_link().get_current() {
+        for url in urls {
+            handle_deep_link(app, url.as_str());
+        }
+    }
+    for arg in std::env::args().filter(|arg| is_deep_link(arg)) {
+        handle_deep_link(app, &arg);
+    }
+}
+
+pub fn is_deep_link(arg: &str) -> bool {
+    arg.strip_prefix(DEEP_LINK_SCHEME)
+        .is_some_and(|rest| rest.starts_with("://"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_challenge_is_the_rfc_7636_s256_of_the_verifier() {
+        // RFC 7636 Appendix B.
+        assert_eq!(
+            challenge_for("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        );
+    }
+
+    #[test]
+    fn only_the_sign_in_callback_completes_a_sign_in() {
+        // (link, code and state handed to the sign-in)
+        for (link, expected) in [
+            (
+                "sanka-monitor://auth/callback?code=abc&state=xyz",
+                Some(("abc", "xyz")),
+            ),
+            ("sanka-monitor://auth/callback?code=abc", None),
+            ("sanka-monitor://auth/callback?code=&state=xyz", None),
+            (
+                "sanka-monitor://elsewhere/callback?code=abc&state=xyz",
+                None,
+            ),
+            ("https://auth/callback?code=abc&state=xyz", None),
+            ("not a link", None),
+        ] {
+            assert_eq!(
+                callback_params(link),
+                expected.map(|(code, state)| (code.to_string(), state.to_string())),
+                "{link}"
+            );
+        }
+        assert!(is_deep_link("sanka-monitor://auth/callback?code=a&state=b"));
+        assert!(!is_deep_link("scan"));
+        assert!(!is_deep_link("sanka-monitorx://auth"));
+    }
+
+    /// The connect page gets the challenge, the state and the platform, and
+    /// nothing about the computer.
+    #[test]
+    fn the_connect_page_link_carries_no_computer_details() {
+        let link = connect_url("https://monitor.sanka.com/", Lang::Ja, "c", "s");
+        let url = url::Url::parse(&link).unwrap();
+        assert_eq!(url.path(), "/ja/desktop/monitor/connect");
+        let keys: Vec<String> = url.query_pairs().map(|(key, _)| key.into_owned()).collect();
+        assert_eq!(keys, ["challenge", "state", "platform"]);
+        assert_eq!(
+            connect_url("https://monitor.sanka.com", Lang::En, "c", "s")
+                .split('?')
+                .next(),
+            Some("https://monitor.sanka.com/desktop/monitor/connect")
+        );
+    }
+}

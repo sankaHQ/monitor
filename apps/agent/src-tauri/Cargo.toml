@@ -13,7 +13,10 @@ repository.workspace = true
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+# Signing in to send reports (PKCE, as Sanka Recorder); already in the build.
+base64 = "0.22"
 chrono = { workspace = true }
+getrandom = "0.4"
 keyring = { version = "3", features = ["apple-native", "windows-native"] }
 monitor-core = { path = "../../../crates/monitor-core" }
 monitor-findings = { path = "../../../crates/monitor-findings" }
@@ -41,6 +44,7 @@ tauri-plugin-dialog = "~2.7"
 # macros is required for tokio::select!; do not rely on workspace feature
 # unification from dev-dependencies — bin-only builds drop it.
 tokio = { version = "1", features = ["macros", "time"] }
+url = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit = { version = "0.3", default-features = false, features = [

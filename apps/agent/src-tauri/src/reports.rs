@@ -4,10 +4,12 @@
 //! the person picked in the system's save dialog (which also spares macOS's
 //! folder-access prompt).
 //!
-//! "Upload this report to Sanka" is the one exception, and only on the
-//! person's word: [`prepare_upload`] reads one report file and shows its
-//! name, size and SHA-256; [`send_upload`] sends exactly those bytes, with
-//! whatever the person typed, and compares Sanka's receipt with the hash.
+//! "Send to Sanka" is the one exception, and only on the person's word:
+//! [`prepare_send`] builds the Excel report from the latest scan (or
+//! [`prepare_edited_excel`] reads a ledger the person filled in) and shows
+//! exactly what will be sent: the device, the counts, the file name, size and
+//! SHA-256. [`send_report`] sends those bytes as the Sanka account the person
+//! signed in with (`account.rs`) and compares Sanka's receipt with the hash.
 
 use std::path::{Path, PathBuf};
 
@@ -20,9 +22,12 @@ use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt as _;
 use tauri_plugin_opener::OpenerExt as _;
 
+use crate::account;
 use crate::agent::{AgentState, AGENT_VERSION};
 use crate::cli::{self, Format};
-use monitor_sync::{AgentClient, ReportReceipt, ReportUploadFields, REPORTS_PATH};
+use monitor_sync::{
+    AgentClient, DesktopEndpoint, ReportReceipt, ReportSendFields, ReportSummary, SyncError,
+};
 use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Serialize)]
@@ -310,26 +315,41 @@ pub async fn open_report(app: AppHandle, path: PathBuf) -> Result<(), String> {
 
 /// The largest report Sanka accepts.
 const MAX_UPLOAD_BYTES: u64 = 10 * 1024 * 1024;
+const XLSX_CONTENT_TYPE: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
-/// A report read for sending: kept as read, so the bytes sent are the bytes
-/// the person was shown.
+/// A report about to be sent: built or read once and kept as it is, so the
+/// bytes sent are the bytes the person was shown.
 pub struct PendingUpload {
     token: String,
     file_name: String,
-    format: Format,
     content: Vec<u8>,
     sha256: String,
     report_id: Option<String>,
+    summary: Option<ReportSummary>,
 }
 
+/// The scan a report was built from, as the preview shows it.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct UploadPreview {
+pub struct SendScan {
+    pub hostname: String,
+    pub device_model: Option<String>,
+    pub os_name: String,
+    pub scanned_at: DateTime<Utc>,
+    pub summary: ReportSummary,
+}
+
+/// Exactly what Send will send.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendPreview {
     pub token: String,
     pub file_name: String,
     pub format: &'static str,
     pub size_bytes: u64,
     pub sha256: String,
+    /// `None` for an edited workbook: its contents are the person's.
+    pub scan: Option<SendScan>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -340,28 +360,6 @@ pub struct UploadResult {
     pub matches: bool,
 }
 
-fn upload_format(path: &Path) -> Result<Format, String> {
-    match path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(str::to_ascii_lowercase)
-        .as_deref()
-    {
-        Some("xlsx") => Ok(Format::Xlsx),
-        Some("csv") => Ok(Format::Csv),
-        Some("html" | "htm") => Ok(Format::Html),
-        _ => Err("choose an Excel (.xlsx), CSV or HTML report from Sanka Monitor".to_string()),
-    }
-}
-
-fn content_type(format: Format) -> &'static str {
-    match format {
-        Format::Xlsx => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        Format::Csv => "text/csv",
-        Format::Html => "text/html",
-    }
-}
-
 fn sha256_hex(content: &[u8]) -> String {
     Sha256::digest(content)
         .iter()
@@ -369,88 +367,134 @@ fn sha256_hex(content: &[u8]) -> String {
         .collect()
 }
 
-/// Reads the report to send: one this app saved (`path`), or one the person
-/// picks (`None`, the open dialog). `None` back when they cancel.
-#[tauri::command]
-pub async fn prepare_upload(
-    app: AppHandle,
-    path: Option<PathBuf>,
-) -> Result<Option<UploadPreview>, String> {
-    let state: State<'_, AgentState> = app.state();
-    let (path, report_id) = match path {
-        Some(path) => {
-            let path = saved_path(&app, &path).await?;
-            let report_id = state
-                .saved_reports
-                .lock()
-                .await
-                .iter()
-                .find(|saved| saved.path == path)
-                .map(|saved| saved.report_id.clone());
-            (path, report_id)
-        }
-        None => {
-            let dialog = app
-                .dialog()
-                .file()
-                .add_filter("Sanka Monitor report", &["xlsx", "csv", "html"]);
-            let Some(chosen) =
-                tauri::async_runtime::spawn_blocking(move || dialog.blocking_pick_file())
-                    .await
-                    .map_err(|err| err.to_string())?
-            else {
-                return Ok(None);
-            };
-            let path = chosen
-                .into_path()
-                .map_err(|err| format!("cannot open that file: {err}"))?;
-            (path, None)
-        }
+/// The counts the preview shows and that go with the report, as shown.
+pub fn report_summary(report: &ScanReport) -> ReportSummary {
+    let counts = report.counts();
+    ReportSummary {
+        high: counts.high,
+        medium: counts.medium,
+        low: counts.low,
+        programs: counts.programs,
+        programs_past_support: counts.programs_past_support,
+    }
+}
+
+/// The name of a report the app sends: the scan's local time, and no
+/// computer name or serial number (those stay inside the file).
+pub fn sent_file_name(report: &ScanReport) -> String {
+    format!(
+        "sanka-monitor-report_{}.xlsx",
+        report
+            .scanned_at
+            .with_timezone(&chrono::Local)
+            .format("%Y%m%d-%H%M")
+    )
+}
+
+async fn keep_pending(
+    state: &State<'_, AgentState>,
+    pending: PendingUpload,
+    scan: Option<SendScan>,
+) -> SendPreview {
+    let preview = SendPreview {
+        token: pending.token.clone(),
+        file_name: pending.file_name.clone(),
+        format: Format::Xlsx.extension(),
+        size_bytes: pending.content.len() as u64,
+        sha256: pending.sha256.clone(),
+        scan,
     };
-    let format = upload_format(&path)?;
+    *state.pending_upload.lock().await = Some(pending);
+    preview
+}
+
+/// Builds the Excel report (IT資産台帳) from the latest scan in `lang` and
+/// shows exactly what Send will send.
+#[tauri::command]
+pub async fn prepare_send(app: AppHandle, lang: Lang) -> Result<SendPreview, String> {
+    let state: State<'_, AgentState> = app.state();
+    let report = state
+        .last_scan
+        .lock()
+        .await
+        .clone()
+        .ok_or("scan this computer first")?;
+    let content = cli::encode(&report, Format::Xlsx, lang)?;
+    let summary = report_summary(&report);
+    let pending = PendingUpload {
+        token: uuid::Uuid::new_v4().to_string(),
+        file_name: sent_file_name(&report),
+        sha256: sha256_hex(&content),
+        content,
+        report_id: Some(report.report_id.clone()),
+        summary: Some(summary),
+    };
+    let scan = SendScan {
+        hostname: report.device.hostname.clone(),
+        device_model: report.device.device_model.clone(),
+        os_name: copy::os_name(&report.device),
+        scanned_at: report.scanned_at,
+        summary,
+    };
+    Ok(keep_pending(&state, pending, Some(scan)).await)
+}
+
+/// An Excel ledger the person filled in (users, locations), picked in the
+/// open dialog: only a Sanka Monitor workbook. `None` when they cancel.
+#[tauri::command]
+pub async fn prepare_edited_excel(app: AppHandle) -> Result<Option<SendPreview>, String> {
+    let state: State<'_, AgentState> = app.state();
+    let dialog = app
+        .dialog()
+        .file()
+        .add_filter("Excel (Sanka Monitor)", &[Format::Xlsx.extension()]);
+    let Some(chosen) = tauri::async_runtime::spawn_blocking(move || dialog.blocking_pick_file())
+        .await
+        .map_err(|err| err.to_string())?
+    else {
+        return Ok(None);
+    };
+    let path = chosen
+        .into_path()
+        .map_err(|err| format!("cannot open that file: {err}"))?;
     let read_path = path.clone();
     let content = tauri::async_runtime::spawn_blocking(move || {
         let size = std::fs::metadata(&read_path)?.len();
         if size > MAX_UPLOAD_BYTES {
-            return Err(std::io::Error::other("the report is larger than 10 MB"));
+            return Err(std::io::Error::other("the workbook is larger than 10 MB"));
         }
         std::fs::read(&read_path)
     })
     .await
     .map_err(|err| err.to_string())?
     .map_err(|err| format!("cannot read {}: {err}", path.display()))?;
-    if content.is_empty() {
-        return Err("the report is empty".to_string());
+    if !monitor_report::xlsx::is_monitor_workbook(&content) {
+        return Err(
+            "choose an Excel workbook saved from Sanka Monitor (the IT asset ledger)".to_string(),
+        );
     }
     let pending = PendingUpload {
         token: uuid::Uuid::new_v4().to_string(),
         file_name: path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| format!("report.{}", format.extension())),
-        format,
+            .unwrap_or_else(|| "sanka-monitor-report.xlsx".to_string()),
         sha256: sha256_hex(&content),
         content,
-        report_id,
+        report_id: None,
+        summary: None,
     };
-    let preview = UploadPreview {
-        token: pending.token.clone(),
-        file_name: pending.file_name.clone(),
-        format: format.extension(),
-        size_bytes: pending.content.len() as u64,
-        sha256: pending.sha256.clone(),
-    };
-    *state.pending_upload.lock().await = Some(pending);
-    Ok(Some(preview))
+    Ok(Some(keep_pending(&state, pending, None).await))
 }
 
-/// Sends the prepared report to Sanka, exactly as shown, and records the
-/// request (without the file's contents) in the Privacy pane.
+/// Sends the prepared report to Sanka as the signed-in account, exactly as
+/// shown, and lists the request (without the file's contents) in the
+/// Privacy pane.
 #[tauri::command]
-pub async fn send_upload(
+pub async fn send_report(
     app: AppHandle,
     token: String,
-    fields: ReportUploadFields,
+    note: Option<String>,
 ) -> Result<UploadResult, String> {
     let state: State<'_, AgentState> = app.state();
     let pending = {
@@ -459,17 +503,47 @@ pub async fn send_upload(
             Some(pending) if pending.token == token => pending,
             other => {
                 *slot = other;
-                return Err("choose the report again; this one is no longer prepared".to_string());
+                return Err("prepare the report again; this one is no longer ready".to_string());
             }
         }
     };
-    let fields = ReportUploadFields {
+    let fields = ReportSendFields {
+        note: note
+            .map(|note| note.trim().to_string())
+            .filter(|note| !note.is_empty()),
         report_id: pending.report_id.clone(),
         agent_version: Some(AGENT_VERSION.to_string()),
-        ..fields
+        summary: pending.summary,
     };
+    let sent = send_as_account(&app, &pending, &fields).await;
+    let receipt = match sent {
+        Ok(receipt) => receipt,
+        Err(err) => {
+            // Kept for "Try again": the same bytes, still as shown.
+            *state.pending_upload.lock().await = Some(pending);
+            if err.signed_out() {
+                account::forget_account(&app).await?;
+                return Err("You are signed out of Sanka. Sign in again to send.".to_string());
+            }
+            return Err(format!("Sanka did not receive the report: {err}"));
+        }
+    };
+    let matches = receipt.sha256.eq_ignore_ascii_case(&pending.sha256)
+        && receipt.size_bytes == pending.content.len() as u64;
+    Ok(UploadResult { receipt, matches })
+}
+
+/// One send with the account's token; a token Sanka no longer accepts is
+/// replaced once.
+async fn send_as_account(
+    app: &AppHandle,
+    pending: &PendingUpload,
+    fields: &ReportSendFields,
+) -> Result<ReportReceipt, SyncError> {
+    let state: State<'_, AgentState> = app.state();
+    let mut token = account::access_token(app).await?;
     let api_base = state.config.lock().await.api_base();
-    let client = AgentClient::new(api_base, AGENT_VERSION).map_err(|err| err.to_string())?;
+    let client = AgentClient::new(api_base, AGENT_VERSION)?;
     let mut shown = serde_json::json!({
         "file": {
             "name": pending.file_name,
@@ -478,33 +552,42 @@ pub async fn send_upload(
         },
     });
     for (name, value) in fields.form() {
-        shown[name] = serde_json::Value::String(value.to_string());
+        shown[name] = match name {
+            "summary" => serde_json::to_value(fields.summary).unwrap_or_default(),
+            _ => serde_json::Value::String(value),
+        };
     }
-    let request_id = state.record_payload(REPORTS_PATH, shown).await;
-    let sent = client
-        .upload_report(
-            &pending.file_name,
-            content_type(pending.format),
-            &pending.content,
-            &fields,
-        )
+    let request_id = state
+        .record_payload(&DesktopEndpoint::Reports.path(), shown)
         .await;
-    let receipt = match sent {
-        Ok(receipt) => receipt,
-        Err(err) => {
-            // Kept for "Try again": the same bytes, still as shown.
-            *state.pending_upload.lock().await = Some(pending);
-            return Err(format!("Sanka did not receive the report: {err}"));
+    let mut retried = false;
+    loop {
+        let sent = client
+            .send_report(
+                &token,
+                &pending.file_name,
+                XLSX_CONTENT_TYPE,
+                &pending.content,
+                fields,
+            )
+            .await;
+        match sent {
+            Err(err) if err.token_rejected() && !retried => {
+                account::forget_token(app).await;
+                token = account::access_token(app).await?;
+                retried = true;
+            }
+            Ok(receipt) => {
+                state.mark_payload_delivered(request_id).await;
+                return Ok(receipt);
+            }
+            Err(err) => return Err(err),
         }
-    };
-    state.mark_payload_delivered(request_id).await;
-    let matches = receipt.sha256.eq_ignore_ascii_case(&pending.sha256)
-        && receipt.size_bytes == pending.content.len() as u64;
-    Ok(UploadResult { receipt, matches })
+    }
 }
 
 #[tauri::command]
-pub async fn cancel_upload(app: AppHandle) {
+pub async fn cancel_send(app: AppHandle) {
     *app.state::<AgentState>().pending_upload.lock().await = None;
 }
 
@@ -527,17 +610,34 @@ mod tests {
         }
     }
 
+    /// Sanka's staff see the file name in their list and notifications; the
+    /// computer's name and serial number stay inside the file.
     #[test]
-    fn only_report_files_can_be_sent() {
-        for (name, format) in [
-            ("PC_1.xlsx", Some(Format::Xlsx)),
-            ("PC_1.XLSX", Some(Format::Xlsx)),
-            ("fleet.csv", Some(Format::Csv)),
-            ("report.htm", Some(Format::Html)),
-            ("notes.docx", None),
-            ("noextension", None),
-        ] {
-            assert_eq!(upload_format(Path::new(name)).ok(), format, "{name}");
-        }
+    fn a_sent_report_is_named_without_the_computer() {
+        let report = ScanReport {
+            schema_version: 1,
+            report_id: "r-1".into(),
+            scanned_at: chrono::Utc::now(),
+            agent_version: "0.4.0".into(),
+            catalog_verified_on: None,
+            device: DeviceRecord {
+                hostname: "Aiko-MacBook-Pro".into(),
+                platform: "macos".into(),
+                os_version: "26.1".into(),
+                os_edition: None,
+                device_model: Some("Mac17,8".into()),
+                serial_number: Some("C02XYZ12345".into()),
+            },
+            os_lifecycle: None,
+            checks: Vec::new(),
+            software: Vec::new(),
+            findings: Vec::new(),
+        };
+        let name = sent_file_name(&report);
+        assert!(name.starts_with("sanka-monitor-report_") && name.ends_with(".xlsx"));
+        assert!(
+            !name.contains("Aiko") && !name.contains("C02XYZ12345"),
+            "{name}"
+        );
     }
 }
