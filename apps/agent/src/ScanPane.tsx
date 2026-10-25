@@ -31,7 +31,7 @@ export function ScanPane({
   setError: (error: string | null) => void;
 }) {
   const [saving, setSaving] = useState<ReportFormat | null>(null);
-  const [sending, setSending] = useState(false);
+  const [sendOpen, setSendOpen] = useState(false);
   const t = s.scan;
 
   const save = async (format: ReportFormat) => {
@@ -56,7 +56,7 @@ export function ScanPane({
     <section>
       <div className="row">
         {scan ? (
-          <button onClick={() => setSending(true)} disabled={scanning || sending}>
+          <button onClick={() => setSendOpen(true)} disabled={scanning || sendOpen}>
             {t.sendToSanka}
           </button>
         ) : null}
@@ -113,14 +113,14 @@ export function ScanPane({
             </div>
           </dl>
 
-          {sending ? (
+          {sendOpen ? (
             <SendPanel
               s={s}
               lang={lang}
               reportId={scan.reportId}
               account={account}
               onAccount={onAccount}
-              onClose={() => setSending(false)}
+              onClose={() => setSendOpen(false)}
             />
           ) : null}
 

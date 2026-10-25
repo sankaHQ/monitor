@@ -38,8 +38,10 @@ privacy permission.
   the Sanka account they signed in with in the system browser (PKCE; the code
   comes back through `sanka-monitor://auth/callback` and is bound to a verifier
   only the app holds). The sign-in's device secret lives only in the OS keychain
-  or credential store, and Sign out revokes it. The app sends exactly the file it
-  showed, and compares Sanka's SHA-256 receipt with its own.
+  or credential store, and Sign out revokes it (waiting at most 15 seconds for
+  Sanka, then forgetting it here anyway). A keychain prompt the person declines
+  never signs the app out. The app sends exactly the file it showed, and compares
+  Sanka's SHA-256 receipt with its own.
 - **Connected mode (opt-in enrollment).** The device secret lives only in the OS
   keychain or credential store. It is exchanged for short-lived runtime tokens, and
   every request body is shown in the app's Privacy pane before it is sent. App usage

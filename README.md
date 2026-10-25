@@ -19,7 +19,9 @@ local-first:
   and the platform; the device credential stays in the OS keychain. The app builds
   the Excel report from the current scan, or takes an edited Sanka Monitor
   workbook, shows exactly what will be sent (device, risk counts, program counts,
-  file name, size and SHA-256) and sends those bytes and counts to
+  file name, size and SHA-256; the file is sent as
+  `sanka-monitor-report_<date-time>.xlsx`, never under the computer's name) and
+  sends those bytes and counts to
   `POST /api/v2/monitor/desktop/reports` with a one-hour token. Sanka's receipt
   carries its own SHA-256 to compare, and every request appears in the Privacy
   pane. Without an account, the person emails the saved Excel instead.

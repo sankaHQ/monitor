@@ -40,6 +40,47 @@ pub const ACCOUNT_EVENT: &str = "account-changed";
 const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// A token this close to expiring is replaced before a send.
 const TOKEN_MARGIN: Duration = Duration::from_secs(60);
+/// Asking Sanka for a token holds the token lock: it never waits longer.
+const TOKEN_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Sign out waits this long for Sanka, then forgets the account anyway.
+const SIGN_OUT_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Why the app has no runtime token for a send.
+#[derive(Debug)]
+pub enum TokenError {
+    /// Sanka refused (a signed-out credential among them) or was unreachable.
+    Sync(SyncError),
+    /// The keychain did not hand over the secret (locked, or the person chose
+    /// Deny). The account is still signed in, here and in Sanka.
+    Keychain(String),
+    /// Sanka did not answer in time.
+    TimedOut,
+}
+
+impl TokenError {
+    /// Only Sanka's answer signs the app out: never a keychain prompt or a slow
+    /// network, which would leave a credential live in Sanka with no app here
+    /// to revoke it.
+    pub fn signed_out(&self) -> bool {
+        matches!(self, TokenError::Sync(err) if err.signed_out())
+    }
+}
+
+impl From<SyncError> for TokenError {
+    fn from(err: SyncError) -> Self {
+        TokenError::Sync(err)
+    }
+}
+
+impl std::fmt::Display for TokenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TokenError::Sync(err) => err.fmt(f),
+            TokenError::Keychain(message) => f.write_str(message),
+            TokenError::TimedOut => f.write_str("Sanka did not answer in time"),
+        }
+    }
+}
 
 /// A sign-in the person started that the browser has not answered yet.
 pub struct PendingSignIn {
@@ -132,11 +173,14 @@ async fn store_secret(device_id: String, secret: String) -> Result<(), String> {
     .map_err(|err| err.to_string())?
 }
 
-async fn read_secret(device_id: String) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        keyring_entry(&device_id)?
-            .get_password()
-            .map_err(|err| format!("the sign-in is missing from the keychain: {err}"))
+/// The secret, or `None` when this computer's keychain no longer holds it.
+async fn read_secret(device_id: String) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || match keyring_entry(&device_id)?.get_password() {
+        Ok(secret) => Ok(Some(secret)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(err) => Err(format!(
+            "Sanka Monitor could not read its sign-in from the keychain ({err}). Allow access and try again."
+        )),
     })
     .await
     .map_err(|err| err.to_string())?
@@ -304,7 +348,7 @@ pub fn handle_deep_link(app: &AppHandle, raw: &str) {
 
 /// A runtime token for sending, refreshed under one lock so that parallel
 /// sends never race for it.
-pub async fn access_token(app: &AppHandle) -> Result<String, SyncError> {
+pub async fn access_token(app: &AppHandle) -> Result<String, TokenError> {
     let state: State<'_, AgentState> = app.state();
     let mut cached = state.account_token.lock().await;
     if let Some((token, expires)) = cached.as_ref() {
@@ -319,19 +363,18 @@ pub async fn access_token(app: &AppHandle) -> Result<String, SyncError> {
     let account = account.ok_or_else(not_signed_in)?;
     let secret = read_secret(account.device_id.clone())
         .await
-        .map_err(|message| SyncError::Api {
-            status: 401,
-            code: Some(monitor_sync::DESKTOP_DEVICE_INVALID.to_string()),
-            message,
-        })?;
+        .map_err(TokenError::Keychain)?
+        // Gone from the keychain: this app can no longer send as the account.
+        .ok_or_else(not_signed_in)?;
     let client = AgentClient::new(api_base, AGENT_VERSION)?;
-    let data = client
-        .desktop_token(&DesktopTokenRequest {
-            device_id: account.device_id,
-            device_secret: secret,
-            app_version: AGENT_VERSION.to_string(),
-        })
-        .await?;
+    let request = DesktopTokenRequest {
+        device_id: account.device_id,
+        device_secret: secret,
+        app_version: AGENT_VERSION.to_string(),
+    };
+    let data = tokio::time::timeout(TOKEN_REQUEST_TIMEOUT, client.desktop_token(&request))
+        .await
+        .map_err(|_| TokenError::TimedOut)??;
     let token = data.access_token.clone();
     *cached = Some((
         data.access_token,
@@ -373,17 +416,21 @@ pub async fn forget_account(app: &AppHandle) -> Result<(), String> {
 /// Sign out: revokes the credential in Sanka when it can, then forgets it.
 #[tauri::command]
 pub async fn sign_out(app: AppHandle) -> Result<AccountView, String> {
-    if let Ok(token) = access_token(&app).await {
-        let api_base = app.state::<AgentState>().config.lock().await.api_base();
-        if let Ok(client) = AgentClient::new(api_base, AGENT_VERSION) {
-            // Without the network the secret is still deleted here, so it cannot send.
-            let _ =
-                tokio::time::timeout(Duration::from_secs(15), client.desktop_revoke(&token)).await;
-        }
-    }
+    // Without the network the secret is still deleted here, so it cannot send.
+    let _ = tokio::time::timeout(SIGN_OUT_TIMEOUT, revoke(&app)).await;
     forget_account(&app).await?;
     *app.state::<AgentState>().account_error.lock().await = None;
     Ok(account_view(&app).await)
+}
+
+/// Revokes this app's credential in Sanka: its token, then the revoke call.
+async fn revoke(app: &AppHandle) -> Result<(), TokenError> {
+    let token = access_token(app).await?;
+    let api_base = app.state::<AgentState>().config.lock().await.api_base();
+    AgentClient::new(api_base, AGENT_VERSION)?
+        .desktop_revoke(&token)
+        .await?;
+    Ok(())
 }
 
 pub fn register_deep_links(app: &AppHandle) {

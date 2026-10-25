@@ -25,9 +25,7 @@ use tauri_plugin_opener::OpenerExt as _;
 use crate::account;
 use crate::agent::{AgentState, AGENT_VERSION};
 use crate::cli::{self, Format};
-use monitor_sync::{
-    AgentClient, DesktopEndpoint, ReportReceipt, ReportSendFields, ReportSummary, SyncError,
-};
+use monitor_sync::{AgentClient, DesktopEndpoint, ReportReceipt, ReportSendFields, ReportSummary};
 use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Serialize)]
@@ -379,15 +377,13 @@ pub fn report_summary(report: &ScanReport) -> ReportSummary {
     }
 }
 
-/// The name of a report the app sends: the scan's local time, and no
-/// computer name or serial number (those stay inside the file).
-pub fn sent_file_name(report: &ScanReport) -> String {
+/// The name of a report the app sends: a local time (the scan's, or when an
+/// edited ledger was picked), and no computer name or serial number (those
+/// stay inside the file).
+pub fn sent_file_name(at: DateTime<Utc>) -> String {
     format!(
         "sanka-monitor-report_{}.xlsx",
-        report
-            .scanned_at
-            .with_timezone(&chrono::Local)
-            .format("%Y%m%d-%H%M")
+        at.with_timezone(&chrono::Local).format("%Y%m%d-%H%M")
     )
 }
 
@@ -423,7 +419,7 @@ pub async fn prepare_send(app: AppHandle, lang: Lang) -> Result<SendPreview, Str
     let summary = report_summary(&report);
     let pending = PendingUpload {
         token: uuid::Uuid::new_v4().to_string(),
-        file_name: sent_file_name(&report),
+        file_name: sent_file_name(report.scanned_at),
         sha256: sha256_hex(&content),
         content,
         report_id: Some(report.report_id.clone()),
@@ -475,10 +471,8 @@ pub async fn prepare_edited_excel(app: AppHandle) -> Result<Option<SendPreview>,
     }
     let pending = PendingUpload {
         token: uuid::Uuid::new_v4().to_string(),
-        file_name: path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "sanka-monitor-report.xlsx".to_string()),
+        // Sent under the app's own name: a saved ledger is named after its computer.
+        file_name: sent_file_name(Utc::now()),
         sha256: sha256_hex(&content),
         content,
         report_id: None,
@@ -519,8 +513,9 @@ pub async fn send_report(
     let receipt = match sent {
         Ok(receipt) => receipt,
         Err(err) => {
-            // Kept for "Try again": the same bytes, still as shown.
-            *state.pending_upload.lock().await = Some(pending);
+            // Kept for "Try again": the same bytes, still as shown, unless a newer
+            // report was prepared while this one was on its way.
+            state.pending_upload.lock().await.get_or_insert(pending);
             if err.signed_out() {
                 account::forget_account(&app).await?;
                 return Err("You are signed out of Sanka. Sign in again to send.".to_string());
@@ -539,7 +534,7 @@ async fn send_as_account(
     app: &AppHandle,
     pending: &PendingUpload,
     fields: &ReportSendFields,
-) -> Result<ReportReceipt, SyncError> {
+) -> Result<ReportReceipt, account::TokenError> {
     let state: State<'_, AgentState> = app.state();
     let mut token = account::access_token(app).await?;
     let api_base = state.config.lock().await.api_base();
@@ -581,7 +576,7 @@ async fn send_as_account(
                 state.mark_payload_delivered(request_id).await;
                 return Ok(receipt);
             }
-            Err(err) => return Err(err),
+            Err(err) => return Err(err.into()),
         }
     }
 }
@@ -610,33 +605,23 @@ mod tests {
         }
     }
 
-    /// Sanka's staff see the file name in their list and notifications; the
-    /// computer's name and serial number stay inside the file.
+    /// Sanka keeps exactly this name, so the receipt names the file the
+    /// preview showed; a saved ledger's name (its computer and serial) it
+    /// would replace.
     #[test]
-    fn a_sent_report_is_named_without_the_computer() {
-        let report = ScanReport {
-            schema_version: 1,
-            report_id: "r-1".into(),
-            scanned_at: chrono::Utc::now(),
-            agent_version: "0.4.0".into(),
-            catalog_verified_on: None,
-            device: DeviceRecord {
-                hostname: "Aiko-MacBook-Pro".into(),
-                platform: "macos".into(),
-                os_version: "26.1".into(),
-                os_edition: None,
-                device_model: Some("Mac17,8".into()),
-                serial_number: Some("C02XYZ12345".into()),
-            },
-            os_lifecycle: None,
-            checks: Vec::new(),
-            software: Vec::new(),
-            findings: Vec::new(),
-        };
-        let name = sent_file_name(&report);
-        assert!(name.starts_with("sanka-monitor-report_") && name.ends_with(".xlsx"));
+    fn a_sent_report_is_named_as_sanka_keeps_it() {
+        let name = sent_file_name(Utc::now());
+        let stamp = name
+            .strip_prefix("sanka-monitor-report_")
+            .and_then(|rest| rest.strip_suffix(".xlsx"))
+            .unwrap_or_else(|| panic!("{name}"));
+        assert_eq!(stamp.len(), 13, "{name}");
         assert!(
-            !name.contains("Aiko") && !name.contains("C02XYZ12345"),
+            stamp.chars().enumerate().all(|(at, c)| if at == 8 {
+                c == '-'
+            } else {
+                c.is_ascii_digit()
+            }),
             "{name}"
         );
     }
