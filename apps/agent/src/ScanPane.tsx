@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { formatTime, type Strings } from "./i18n";
+import { formatTime, LANGUAGE_NAMES, type Strings } from "./i18n";
 import { SendPanel } from "./SendPanel";
 import type { Account, Lang, ReportFormat, SavedReport, ScanView } from "./types";
 import { formatBytes, Tick } from "./ui";
@@ -12,6 +12,8 @@ export function ScanPane({
   scan,
   scanning,
   lang,
+  reportLang,
+  onReportLang,
   onScan,
   saved,
   onSaved,
@@ -23,6 +25,8 @@ export function ScanPane({
   scan: ScanView | null;
   scanning: boolean;
   lang: Lang;
+  reportLang: Lang;
+  onReportLang: (lang: Lang) => void;
   onScan: () => void;
   saved: SavedReport[];
   onSaved: (saved: SavedReport[]) => void;
@@ -38,7 +42,7 @@ export function ScanPane({
     setSaving(format);
     setError(null);
     try {
-      const result = await invoke<SavedReport | null>("save_report", { format, lang });
+      const result = await invoke<SavedReport | null>("save_report", { format, lang: reportLang });
       if (result) onSaved(await invoke<SavedReport[]>("get_saved_reports"));
     } catch (err) {
       setError(String(err));
@@ -117,6 +121,7 @@ export function ScanPane({
             <SendPanel
               s={s}
               lang={lang}
+              reportLang={reportLang}
               reportId={scan.reportId}
               account={account}
               onAccount={onAccount}
@@ -154,6 +159,19 @@ export function ScanPane({
           </ul>
 
           <h2 className="gap">{t.saveTitle}</h2>
+          <label className="report-lang">
+            <span>{t.reportLanguage}</span>
+            <select
+              value={reportLang}
+              onChange={(event) => onReportLang(event.target.value as Lang)}
+            >
+              {(Object.keys(LANGUAGE_NAMES) as Lang[]).map((code) => (
+                <option key={code} value={code}>
+                  {LANGUAGE_NAMES[code]}
+                </option>
+              ))}
+            </select>
+          </label>
           <ul className="formats">
             {FORMATS.map((format) => (
               <li key={format}>

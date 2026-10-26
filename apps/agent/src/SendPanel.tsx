@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { formatTime, type Strings } from "./i18n";
+import { formatTime, LANGUAGE_NAMES, type Strings } from "./i18n";
 import type { Account, Lang, SendPreview, SendResult } from "./types";
 import { formatBytes } from "./ui";
 
@@ -11,6 +11,7 @@ import { formatBytes } from "./ui";
 export function SendPanel({
   s,
   lang,
+  reportLang,
   reportId,
   account,
   onAccount,
@@ -18,6 +19,8 @@ export function SendPanel({
 }: {
   s: Strings;
   lang: Lang;
+  /// The language the Excel is built in, chosen next to Save.
+  reportLang: Lang;
   /// The latest scan: a new scan or language rebuilds the report shown.
   reportId: string;
   account: Account | null;
@@ -40,11 +43,11 @@ export function SendPanel({
   const buildFromScan = useCallback(async () => {
     setError(null);
     try {
-      setPreview(await invoke<SendPreview>("prepare_send", { lang }));
+      setPreview(await invoke<SendPreview>("prepare_send", { lang: reportLang }));
     } catch (err) {
       setError(String(err));
     }
-  }, [lang]);
+  }, [reportLang]);
 
   useEffect(() => {
     if (!edited) buildFromScan();
@@ -221,6 +224,10 @@ export function SendPanel({
                 <div>
                   <dt>{t.scanned}</dt>
                   <dd>{formatTime(preview.scan.scannedAt, lang)}</dd>
+                </div>
+                <div>
+                  <dt>{t.language}</dt>
+                  <dd>{LANGUAGE_NAMES[reportLang]}</dd>
                 </div>
               </>
             ) : null}

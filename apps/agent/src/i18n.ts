@@ -4,13 +4,14 @@
 // here. Japanese follows the workspace dictionary (見える化, リスク, 登録コード)
 // and ですます調.
 
-import type { Lang } from "./types";
+import type { Lang, Theme } from "./types";
 
 export type Strings = {
   appName: string;
   loading: string;
   never: string;
-  languageLabel: string;
+  themeLabel: string;
+  themes: Record<Theme, string>;
   headerLocal: string;
   headerConnected: (paused: boolean) => string;
   tabs: {
@@ -40,6 +41,7 @@ export type Strings = {
     noRisks: string;
     checks: string;
     saveTitle: string;
+    reportLanguage: string;
     formats: Record<"xlsx" | "html" | "csv", { label: string; hint: string }>;
     save: string;
     saving: string;
@@ -111,6 +113,7 @@ export type Strings = {
     saas: string;
     saasCounts: (found: number, notAllowed: number, browserCheck: boolean) => string;
     scanned: string;
+    language: string;
     file: string;
     size: string;
     fingerprint: string;
@@ -200,7 +203,8 @@ export const STRINGS: Record<Lang, Strings> = {
     appName: "Sanka Monitor",
     loading: "Loading…",
     never: "never",
-    languageLabel: "Language",
+    themeLabel: "Appearance",
+    themes: { system: "System", light: "Light", dark: "Dark" },
     headerLocal: "local scan, nothing leaves this computer",
     headerConnected: (paused) =>
       `connected to a workspace${paused ? " (paused by workspace)" : ""}`,
@@ -233,6 +237,7 @@ export const STRINGS: Record<Lang, Strings> = {
         "No risks found. Risks come from vendor support dates and this computer's own settings; no risk does not prove the computer is safe.",
       checks: "Security checks",
       saveTitle: "Save a report",
+      reportLanguage: "Report language",
       formats: {
         xlsx: {
           label: "Excel (IT asset ledger)",
@@ -244,7 +249,7 @@ export const STRINGS: Record<Lang, Strings> = {
       save: "Save…",
       saving: "Saving…",
       saveHint:
-        "Reports are written only where you choose, in the language above. To get your risks reviewed, use Send to Sanka, or email the saved Excel to your Sanka contact.",
+        "Reports are written only where you choose, in the report language above. To get your risks reviewed, use Send to Sanka, or email the saved Excel to your Sanka contact.",
       savedTitle: "Saved this session",
       open: "Open",
       showInFolder: "Show in folder",
@@ -285,6 +290,7 @@ export const STRINGS: Record<Lang, Strings> = {
           ? " · includes each SaaS's last day used and days used in the last 30 (browser check)"
           : ""),
       scanned: "Scanned",
+      language: "Language",
       file: "File",
       size: "Size",
       fingerprint: "SHA-256",
@@ -445,7 +451,8 @@ export const STRINGS: Record<Lang, Strings> = {
     appName: "Sanka Monitor",
     loading: "読み込み中…",
     never: "なし",
-    languageLabel: "表示言語",
+    themeLabel: "表示",
+    themes: { system: "システム", light: "ライト", dark: "ダーク" },
     headerLocal: "ローカルスキャン、データはこのPCの外に出ません",
     headerConnected: (paused) =>
       `ワークスペースに接続中${paused ? "（ワークスペースにより一時停止中）" : ""}`,
@@ -478,6 +485,7 @@ export const STRINGS: Record<Lang, Strings> = {
         "リスクは見つかりませんでした。リスクは提供元のサポート期限とこのPCの設定から判定しています。リスクが表示されなくても、PCが安全とは限りません。",
       checks: "セキュリティチェック",
       saveTitle: "レポートを保存",
+      reportLanguage: "レポートの言語",
       formats: {
         xlsx: {
           label: "Excel（IT資産台帳）",
@@ -489,7 +497,7 @@ export const STRINGS: Record<Lang, Strings> = {
       save: "保存…",
       saving: "保存中…",
       saveHint:
-        "レポートは指定した場所にだけ、上で選んだ言語で保存します。リスクの確認を依頼するときは［Sankaに送信］を使うか、保存したExcelをSankaの担当者にメールで送ってください。",
+        "レポートは指定した場所にだけ、上で選んだレポートの言語で保存します。リスクの確認を依頼するときは［Sankaに送信］を使うか、保存したExcelをSankaの担当者にメールで送ってください。",
       savedTitle: "このセッションで保存したレポート",
       open: "開く",
       showInFolder: "フォルダーで表示",
@@ -530,6 +538,7 @@ export const STRINGS: Record<Lang, Strings> = {
           ? "・ブラウザーの確認による、SaaSごとの最終利用日と直近30日の利用日数を含みます"
           : ""),
       scanned: "スキャン日時",
+      language: "言語",
       file: "ファイル",
       size: "サイズ",
       fingerprint: "SHA-256",
@@ -691,9 +700,22 @@ export const STRINGS: Record<Lang, Strings> = {
   },
 };
 
-/** The OS language, when the person has not chosen one. */
+/** Each language's own name, for the report language choice. */
+export const LANGUAGE_NAMES: Record<Lang, string> = { en: "English", ja: "日本語" };
+
+/**
+ * The OS language, which the app follows. A language without a translation
+ * falls back to English, so adding one is a matter of adding its strings.
+ */
 export function systemLang(): Lang {
-  return navigator.language.toLowerCase().startsWith("ja") ? "ja" : "en";
+  const supported = Object.keys(STRINGS) as Lang[];
+  const tags = navigator.languages?.length ? navigator.languages : [navigator.language];
+  for (const tag of tags) {
+    const primary = tag.toLowerCase().split("-")[0];
+    const match = supported.find((code) => code === primary);
+    if (match) return match;
+  }
+  return "en";
 }
 
 /** Dates in the app's language. */
