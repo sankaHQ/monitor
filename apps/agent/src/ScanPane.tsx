@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { formatTime, LANGUAGE_NAMES, type Strings } from "./i18n";
-import type { Lang, ReportFormat, SavedReport, ScanView } from "./types";
+import { SendPanel } from "./SendPanel";
+import type { Account, Lang, ReportFormat, SavedReport, ScanView } from "./types";
 import { formatBytes, Tick } from "./ui";
-import { UploadPanel, type UploadPreview } from "./UploadPanel";
 
 const FORMATS: ReportFormat[] = ["xlsx", "html", "csv"];
 
@@ -17,6 +17,8 @@ export function ScanPane({
   onScan,
   saved,
   onSaved,
+  account,
+  onAccount,
   setError,
 }: {
   s: Strings;
@@ -28,22 +30,13 @@ export function ScanPane({
   onScan: () => void;
   saved: SavedReport[];
   onSaved: (saved: SavedReport[]) => void;
+  account: Account | null;
+  onAccount: (account: Account) => void;
   setError: (error: string | null) => void;
 }) {
   const [saving, setSaving] = useState<ReportFormat | null>(null);
-  const [upload, setUpload] = useState<UploadPreview | null>(null);
+  const [sendOpen, setSendOpen] = useState(false);
   const t = s.scan;
-
-  // A saved report (`path`) or one the person picks (`null`).
-  const prepareUpload = async (path: string | null) => {
-    setError(null);
-    try {
-      const preview = await invoke<UploadPreview | null>("prepare_upload", { path });
-      if (preview) setUpload(preview);
-    } catch (err) {
-      setError(String(err));
-    }
-  };
 
   const save = async (format: ReportFormat) => {
     setSaving(format);
@@ -66,7 +59,12 @@ export function ScanPane({
   return (
     <section>
       <div className="row">
-        <button onClick={onScan} disabled={scanning}>
+        {scan ? (
+          <button onClick={() => setSendOpen(true)} disabled={scanning || sendOpen}>
+            {t.sendToSanka}
+          </button>
+        ) : null}
+        <button className={scan ? "secondary" : undefined} onClick={onScan} disabled={scanning}>
           {scanning ? t.scanning : scan ? t.scanAgain : t.scanNow}
         </button>
       </div>
@@ -118,6 +116,18 @@ export function ScanPane({
               </dd>
             </div>
           </dl>
+
+          {sendOpen ? (
+            <SendPanel
+              s={s}
+              lang={lang}
+              reportLang={reportLang}
+              reportId={scan.reportId}
+              account={account}
+              onAccount={onAccount}
+              onClose={() => setSendOpen(false)}
+            />
+          ) : null}
 
           <h2 className="gap">{t.risks}</h2>
           {scan.findings.length === 0 ? (
@@ -196,25 +206,12 @@ export function ScanPane({
                       <button className="link" onClick={() => reveal(report.path)}>
                         {t.showInFolder}
                       </button>
-                      <button className="link" onClick={() => prepareUpload(report.path)}>
-                        {t.uploadToSanka}
-                      </button>
                     </span>
                   </li>
                 ))}
               </ul>
             </>
           ) : null}
-
-          <h2 className="gap">{t.uploadTitle}</h2>
-          {upload ? (
-            <UploadPanel s={s} lang={lang} preview={upload} onClose={() => setUpload(null)} />
-          ) : (
-            <>
-              <p className="hint">{t.uploadIntro}</p>
-              <button onClick={() => prepareUpload(null)}>{t.chooseFile}</button>
-            </>
-          )}
         </>
       )}
     </section>

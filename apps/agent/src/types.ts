@@ -209,3 +209,56 @@ export type SavedReport = {
   savedAt: string;
   reportId: string;
 };
+
+/** The Sanka account the app sends reports as (`get_account`). */
+export type Account = {
+  signedIn: boolean;
+  userName: string | null;
+  userEmail: string | null;
+  workspaceName: string | null;
+  /** A sign-in is waiting for the browser. */
+  signingIn: boolean;
+  /** Why the last sign-in from the browser failed. */
+  error: string | null;
+};
+
+/** The counts the app shows beside a report it built, and sends as shown. */
+export type ReportSummary = {
+  high: number;
+  medium: number;
+  low: number;
+  programs: number;
+  programsPastSupport: number;
+};
+
+/** Exactly what Send will send (`prepare_send`, `prepare_edited_excel`). */
+export type SendPreview = {
+  token: string;
+  fileName: string;
+  format: string;
+  sizeBytes: number;
+  sha256: string;
+  /** The scan the report was built from; null for an edited workbook. */
+  scan: {
+    hostname: string;
+    deviceModel: string | null;
+    osName: string;
+    scannedAt: string;
+    summary: ReportSummary;
+    saas: number;
+    saasNotAllowed: number;
+    /** The SaaS sheet includes each SaaS's last day used and days used. */
+    saasBrowserCheck: boolean;
+  } | null;
+};
+
+export type SendResult = {
+  receipt: {
+    id: string;
+    receivedAt: string;
+    fileName: string;
+    sizeBytes: number;
+    sha256: string;
+  };
+  matches: boolean;
+};

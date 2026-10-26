@@ -138,6 +138,15 @@ button:disabled {
   cursor: default;
 }
 
+button.secondary {
+  background: transparent;
+  color: var(--accent);
+}
+
+.sign-in {
+  margin-top: 12px;
+}
+
 button.link {
   background: none;
   border: none;
