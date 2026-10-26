@@ -6,12 +6,16 @@
 //!   day used and the days used in the last 30 (`monitor_saas::history`).
 //!   Turning it off waits for a scan in flight, then drops those results from
 //!   the scan the app holds and from a report about to be uploaded, and
-//!   forgets what the regular checks learned from them. The app never sends
-//!   them on its own, connected or not; they leave the computer only inside a
-//!   report the person saves or uploads.
+//!   forgets what the regular checks learned from them. By default they stay
+//!   on this computer: they leave it inside a report the person saves or
+//!   uploads, or, on a connected PC whose person turns on SaaS sharing, as the
+//!   list of SaaS used in the last 30 days and the last day each was used
+//!   (`agent::sync_saas`). Turning sharing off, or the browser check off,
+//!   deletes what the workspace received.
 //! - The allowlist is the machine-wide file device management places, else
-//!   the copy of a file the person chose here (kept in the app's data
-//!   folder, so moving the original changes nothing).
+//!   the workspace's list from its console (connected PCs), else the copy of
+//!   a file the person chose here (kept in the app's data folder, so moving
+//!   the original changes nothing).
 
 use std::path::PathBuf;
 
@@ -35,22 +39,39 @@ fn chosen_allowlist_path(app: &AppHandle) -> Option<PathBuf> {
         .map(|dir| dir.join(ALLOWLIST_FILE_NAME))
 }
 
-/// Where this computer's allowlist may be, in the order they win.
-fn allowlist_candidates(app: &AppHandle) -> Vec<(PathBuf, AllowlistOrigin)> {
-    let mut candidates = Vec::new();
-    if let Some(path) = allowlist::machine_path() {
-        candidates.push((path, AllowlistOrigin::Machine));
+/// The allowlist in force: the machine-wide file, else the workspace's list
+/// (a connected PC hears it with each check-in), else a file the person chose.
+/// `Ok(None)` when there is none, `Err` when a file that wins exists but is
+/// broken (then nothing is judged, and the app says why).
+pub async fn current_allowlist(app: &AppHandle) -> Result<Option<Allowlist>, String> {
+    let catalog = SaasCatalog::bundled();
+    let machine: Vec<(PathBuf, AllowlistOrigin)> = allowlist::machine_path()
+        .map(|path| (path, AllowlistOrigin::Machine))
+        .into_iter()
+        .collect();
+    if let Some(found) = allowlist::find(&machine, catalog) {
+        return found.map(Some);
     }
-    if let Some(path) = chosen_allowlist_path(app) {
-        candidates.push((path, AllowlistOrigin::App));
+    let workspace = app
+        .state::<AgentState>()
+        .config
+        .lock()
+        .await
+        .workspace_allowlist
+        .clone();
+    if let Some(list) = workspace {
+        return Ok(Some(Allowlist::from_keys(
+            list.name,
+            &list.allowed,
+            catalog,
+            AllowlistOrigin::Workspace,
+        )));
     }
-    candidates
-}
-
-/// The allowlist in force: `Ok(None)` when there is none, `Err` when a file
-/// exists but is broken (then nothing is judged, and the app says why).
-pub fn current_allowlist(app: &AppHandle) -> Result<Option<Allowlist>, String> {
-    allowlist::find(&allowlist_candidates(app), SaasCatalog::bundled()).transpose()
+    let chosen: Vec<(PathBuf, AllowlistOrigin)> = chosen_allowlist_path(app)
+        .map(|path| (path, AllowlistOrigin::App))
+        .into_iter()
+        .collect();
+    allowlist::find(&chosen, catalog).transpose()
 }
 
 /// Reads `report`'s SaaS against the browser check's results (`None` while
@@ -105,6 +126,11 @@ pub struct AllowlistView {
 #[serde(rename_all = "camelCase")]
 pub struct SaasSettingsView {
     pub browser_check: bool,
+    /// The person shares the SaaS this PC used with its workspace (connected only).
+    pub saas_sharing: bool,
+    /// Sharing is on but nothing is sent: the workspace paused Sanka Monitor, or
+    /// this app needs an update.
+    pub saas_sharing_held: bool,
     pub allowlist: AllowlistView,
     pub schedule: Option<CheckSchedule>,
     pub last_scheduled_check_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -112,8 +138,8 @@ pub struct SaasSettingsView {
     pub catalog_verified_on: chrono::NaiveDate,
 }
 
-pub fn allowlist_view(app: &AppHandle, lang: Lang) -> AllowlistView {
-    let (list, error) = match current_allowlist(app) {
+pub async fn allowlist_view(app: &AppHandle, lang: Lang) -> AllowlistView {
+    let (list, error) = match current_allowlist(app).await {
         Ok(list) => (list, None),
         Err(err) => (None, Some(err)),
     };
@@ -135,7 +161,9 @@ pub async fn settings_view(app: &AppHandle, lang: Lang) -> SaasSettingsView {
     let config = state.config.lock().await.clone();
     SaasSettingsView {
         browser_check: config.browser_saas_check,
-        allowlist: allowlist_view(app, lang),
+        saas_sharing: config.saas_sharing,
+        saas_sharing_held: config.saas_sharing && !config.saas_uploads_allowed(),
+        allowlist: allowlist_view(app, lang).await,
         schedule: config.check_schedule,
         last_scheduled_check_at: config.last_scheduled_check_at,
         nudges: checks::nudges(app).await,
@@ -150,10 +178,10 @@ pub async fn get_saas_settings(app: AppHandle, lang: Lang) -> SaasSettingsView {
 
 /// Re-marks the scan the app holds against the allowlist now in force,
 /// after any scan in flight.
-async fn remark_last_scan(app: &AppHandle) {
+pub(crate) async fn remark_last_scan(app: &AppHandle) {
     let state: State<'_, AgentState> = app.state();
     let _one_scan = state.scan_lock.lock().await;
-    let allowlist = current_allowlist(app);
+    let allowlist = current_allowlist(app).await;
     let mut last_scan = state.last_scan.lock().await;
     if let Some(report) = last_scan.as_mut() {
         let list = allowlist.as_ref().ok().and_then(Option::as_ref);
@@ -163,7 +191,8 @@ async fn remark_last_scan(app: &AppHandle) {
 }
 
 /// Turns the browser check on or off. Off drops its results from the scan
-/// the app holds and forgets what the regular checks learned from them.
+/// the app holds, forgets what the regular checks learned from them, and
+/// turns SaaS sharing off, which deletes what the workspace received.
 #[tauri::command]
 pub async fn set_browser_check(
     app: AppHandle,
@@ -174,15 +203,23 @@ pub async fn set_browser_check(
     // A scan in flight read the old setting: let it finish first, so its
     // results are dropped below rather than stored after.
     let one_scan = state.scan_lock.lock().await;
-    {
+    let was_sharing = {
         let mut config = state.config.lock().await;
         let mut next = config.clone();
+        let was_sharing = next.saas_sharing;
         next.browser_saas_check = enabled;
+        if !enabled {
+            next.saas_sharing = false;
+        }
         save_config(&app, &next)?;
         *config = next;
+        was_sharing
+    };
+    if !enabled && was_sharing {
+        stop_sharing(&app);
     }
     if !enabled {
-        let allowlist = current_allowlist(&app);
+        let allowlist = current_allowlist(&app).await;
         let mut last_scan = state.last_scan.lock().await;
         if let Some(report) = last_scan.as_mut() {
             apply_saas(report, None, &allowlist);
@@ -192,6 +229,48 @@ pub async fn set_browser_check(
         checks::forget(&app).await;
     }
     drop(one_scan);
+    Ok(settings_view(&app, lang).await)
+}
+
+/// Tells the workspace to delete what this PC shared, in the background. A
+/// PC that is offline tells it with its next check-in (`saasSharing: false`).
+fn stop_sharing(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = crate::agent::send_saas_sharing_off(&app).await;
+    });
+}
+
+/// Turns sharing the SaaS this PC used with the workspace on or off. On
+/// needs a connected PC and the browser check; it sends the summary now. Off
+/// deletes what the workspace received.
+#[tauri::command]
+pub async fn set_saas_sharing(
+    app: AppHandle,
+    enabled: bool,
+    lang: Lang,
+) -> Result<SaasSettingsView, String> {
+    let state: State<'_, AgentState> = app.state();
+    let was_sharing = {
+        let mut config = state.config.lock().await;
+        if enabled && !(config.enrolled() && config.browser_saas_check) {
+            return Err("turn on the browser check on a connected computer first".to_string());
+        }
+        let mut next = config.clone();
+        let was_sharing = next.saas_sharing;
+        next.saas_sharing = enabled;
+        save_config(&app, &next)?;
+        *config = next;
+        was_sharing
+    };
+    if enabled {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = crate::agent::sync_saas(&app).await;
+        });
+    } else if was_sharing {
+        stop_sharing(&app);
+    }
     Ok(settings_view(&app, lang).await)
 }
 

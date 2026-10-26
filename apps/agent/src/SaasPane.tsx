@@ -23,11 +23,14 @@ export function BrowserCheck({
   setError,
   scan,
   scanning,
+  connected,
   onScan,
   onScanChanged,
 }: SettingsProps & {
   scan: ScanView | null;
   scanning: boolean;
+  /** Connected to a workspace: sharing the SaaS this PC used is offered. */
+  connected: boolean;
   onScan: () => void;
   onScanChanged: () => void;
 }) {
@@ -40,6 +43,17 @@ export function BrowserCheck({
       onSettings(await invoke<SaasSettings>("set_browser_check", { enabled, lang }));
       if (enabled) onScan();
       else onScanChanged();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+  const share = async (enabled: boolean) => {
+    setSaving(true);
+    setError(null);
+    try {
+      onSettings(await invoke<SaasSettings>("set_saas_sharing", { enabled, lang }));
     } catch (err) {
       setError(String(err));
     } finally {
@@ -68,6 +82,23 @@ export function BrowserCheck({
         <p className="hint">{t.thisScan(scan.saasCheck.browserSummary)}</p>
       ) : null}
       {safariBlocked ? <p className="hint">{t.safariHint}</p> : null}
+      {connected && settings?.browserCheck ? (
+        <label className="consent">
+          <input
+            type="checkbox"
+            checked={settings.saasSharing}
+            disabled={saving || scanning}
+            onChange={(event) => share(event.target.checked)}
+          />
+          <span>
+            <strong className="consent-label">{t.shareCheck}</strong>
+            {t.shareExplain}
+          </span>
+        </label>
+      ) : null}
+      {connected && settings?.saasSharingHeld ? (
+        <p className="hint">{t.shareHeld}</p>
+      ) : null}
     </>
   );
 }
@@ -161,6 +192,7 @@ export function SaasPane({
   lang,
   scan,
   scanning,
+  connected,
   settings,
   onSettings,
   setError,
@@ -169,6 +201,7 @@ export function SaasPane({
 }: SettingsProps & {
   scan: ScanView | null;
   scanning: boolean;
+  connected: boolean;
   onScan: () => void;
   onScanChanged: () => void;
 }) {
@@ -207,6 +240,7 @@ export function SaasPane({
         setError={setError}
         scan={scan}
         scanning={scanning}
+        connected={connected}
         onScan={onScan}
         onScanChanged={onScanChanged}
       />
@@ -217,8 +251,10 @@ export function SaasPane({
         <>
           <p>{allowlist.error ? null : allowlist.summary}</p>
           {allowlist.error ? <p className="error">{t.allowlistError(allowlist.error)}</p> : null}
-          {allowlist.origin === "machine" ? (
-            <p className="hint">{t.machineInUse}</p>
+          {allowlist.origin === "machine" || allowlist.origin === "workspace" ? (
+            <p className="hint">
+              {allowlist.origin === "machine" ? t.machineInUse : t.workspaceInUse}
+            </p>
           ) : (
             <div className="row">
               <button onClick={() => allowlistCommand("choose_allowlist")} disabled={busy}>

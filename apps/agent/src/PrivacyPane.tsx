@@ -80,6 +80,7 @@ export function PrivacyPane({
         setError={setError}
         scan={scan}
         scanning={scanning}
+        connected={status.enrolled}
         onScan={onScan}
         onScanChanged={onScanChanged}
       />

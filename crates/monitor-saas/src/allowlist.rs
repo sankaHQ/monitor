@@ -13,7 +13,9 @@
 //!
 //! Where a scan finds it, first match wins: the command line's
 //! `--allowlist <file>`, then the machine-wide file that device management
-//! can place ([`machine_path`]), then a file the person chose in the app.
+//! can place ([`machine_path`]), then, on a connected PC, the list the
+//! workspace sets in its console (sent with each check-in), then a file the
+//! person chose in the app.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -35,6 +37,8 @@ pub enum AllowlistOrigin {
     CommandLine,
     /// The machine-wide file device management places.
     Machine,
+    /// The workspace's list, set in its console and sent with each check-in.
+    Workspace,
     /// A file the person chose in the app.
     App,
 }
@@ -102,6 +106,34 @@ impl Allowlist {
             unknown,
             origin,
         })
+    }
+
+    /// A list given as catalog keys (the workspace console's). Keys the
+    /// catalog does not know are kept aside, as in a file.
+    pub fn from_keys(
+        name: Option<String>,
+        keys: &[String],
+        catalog: &SaasCatalog,
+        origin: AllowlistOrigin,
+    ) -> Allowlist {
+        let mut allowed = BTreeSet::new();
+        let mut unknown = Vec::new();
+        for key in keys {
+            match catalog.get(key.trim()) {
+                Some(entry) => {
+                    allowed.insert(entry.key.clone());
+                }
+                None => unknown.push(key.clone()),
+            }
+        }
+        Allowlist {
+            name: name
+                .map(|name| name.trim().chars().take(200).collect::<String>())
+                .filter(|name| !name.is_empty()),
+            allowed,
+            unknown,
+            origin,
+        }
     }
 
     pub fn read(

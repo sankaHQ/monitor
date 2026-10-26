@@ -61,12 +61,16 @@ export type Strings = {
     browserTitle: string;
     browserCheck: string;
     browserExplain: string;
+    shareCheck: string;
+    shareExplain: string;
+    shareHeld: string;
     thisScan: (summary: string) => string;
     safariHint: string;
     allowlistTitle: string;
     allowlistExplain: string;
     machinePath: (path: string) => string;
     machineInUse: string;
+    workspaceInUse: string;
     chooseFile: string;
     stopUsing: string;
     allowlistError: (error: string) => string;
@@ -352,7 +356,7 @@ export const STRINGS: Record<Lang, Strings> = {
     privacy: {
       leavesTitle: "What leaves this computer",
       leavesConnected:
-        "This computer is connected to a workspace: check-ins send its security checks and installed programs, and app usage only if you opted in. Every request is listed below, exactly as sent.",
+        "This computer is connected to a workspace: check-ins send its security checks and installed programs, and app usage and the SaaS it used only if you turned that sharing on. Every request is listed below, exactly as sent.",
       leavesLocal:
         "Nothing, unless you send a report to Sanka yourself. Scans and reports stay on this computer. You sign in to send in your browser; the app itself then sends Sanka only a one-time sign-in code, its version and whether this is a Mac or a Windows PC. The only automatic network request is the update check below, which downloads the latest version number and sends nothing about this computer.",
       updateChecks:
@@ -399,7 +403,12 @@ export const STRINGS: Record<Lang, Strings> = {
       browserTitle: "Browser check",
       browserCheck: "Check my browsers' history on this PC to list the SaaS I use",
       browserExplain:
-        "Off unless you turn it on. When it is on, each scan reads the history of Chrome, Edge and Firefox on this computer, and Safari's only if this Mac already gives Sanka Monitor Full Disk Access (the app never asks for it). It matches each site's name against Sanka Monitor's list of business SaaS. For each SaaS it finds, it keeps only the last day you used it and on how many of the last 30 days. Web addresses, page titles and the rest of your history are not stored, are never written to a report and never leave this computer. Reports you save include the SaaS list with those two values. Turning this off deletes the results.",
+        "Off unless you turn it on. When it is on, each scan reads the history of Chrome, Edge and Firefox on this computer, and Safari's only if this Mac already gives Sanka Monitor Full Disk Access (the app never asks for it). It matches each site's name against Sanka Monitor's list of business SaaS. For each SaaS it finds, it keeps only the last day you used it and on how many of the last 30 days. Web addresses, page titles and the rest of your history are not stored, are never written to a report and never leave this computer. Reports you save include the SaaS list with those two values. The SaaS list leaves this computer only in a report you send, or, on a connected PC, if you turn on sharing with your workspace below. Turning this off deletes the results, and what you shared.",
+      shareCheck: "Share which SaaS this PC used in the last 30 days with my workspace",
+      shareExplain:
+        "Off by default. When it is on, after each scan Sanka Monitor sends your workspace the SaaS the browser check found in the last 30 days and the last day each was used: never web addresses, page titles or your history. Your workspace's admins see only how many PCs used each SaaS, never which ones. Turning this off stops sharing and deletes what was shared. Every request is listed under Privacy, exactly as sent.",
+      shareHeld:
+        "Sharing is on hold: your workspace has paused Sanka Monitor, or this app needs an update. Nothing is sent until then.",
       thisScan: (summary) => `This scan: ${summary}`,
       safariHint:
         "macOS lets an app read Safari's history only with Full Disk Access. Sanka Monitor does not ask for it, because that permission opens every file on this Mac.",
@@ -408,6 +417,7 @@ export const STRINGS: Record<Lang, Strings> = {
         "Your IT team can list the SaaS the company allows in a file, placed on this computer by device management or chosen here. SaaS in use that are not on the list appear as risks.",
       machinePath: (path) => `Device management places the company's file at ${path}.`,
       machineInUse: "Your company's file, placed by device management, is in use.",
+      workspaceInUse: "Your workspace's list, set in its Sanka Monitor console, is in use.",
       chooseFile: "Choose a file…",
       stopUsing: "Stop using this file",
       allowlistError: (error) => `The allowlist could not be read, so no SaaS is judged: ${error}`,
@@ -592,7 +602,7 @@ export const STRINGS: Record<Lang, Strings> = {
     privacy: {
       leavesTitle: "このPCの外に出る情報",
       leavesConnected:
-        "このPCはワークスペースに接続しています。チェックインでセキュリティチェックとインストール済みのソフトウェアを送信し、アプリの利用データは共有をオンにした場合だけ送信します。送信したリクエストは、下にそのまま表示します。",
+        "このPCはワークスペースに接続しています。チェックインでセキュリティチェックとインストール済みのソフトウェアを送信し、アプリの利用データと使ったSaaSは、それぞれ共有をオンにした場合だけ送信します。送信したリクエストは、下にそのまま表示します。",
       leavesLocal:
         "Sankaにレポートを送信しない限り、ありません。スキャン結果とレポートはこのPCに残ります。送信のためのサインインはブラウザーで行い、アプリがSankaに送るのは、ワンタイムのサインインコード、アプリのバージョン、MacかWindowsかの区別だけです。自動で行う通信は下のアップデートの確認だけで、最新のバージョン番号を取得し、このPCの情報は送信しません。",
       updateChecks:
@@ -640,7 +650,12 @@ export const STRINGS: Record<Lang, Strings> = {
       browserTitle: "ブラウザーの確認",
       browserCheck: "このPCのブラウザーの閲覧履歴から、使っているSaaSを確認する",
       browserExplain:
-        "オンにしない限り行いません。オンにすると、スキャンのたびにこのPCのChrome、Edge、Firefoxの閲覧履歴を読み取ります。Safariは、このMacでSanka Monitorにフルディスクアクセスがすでに許可されている場合だけ読み取ります（アプリから許可を求めることはありません）。サイト名をSanka MonitorのビジネスSaaSの一覧と照合し、見つかったSaaSごとに、最後に使った日と、直近30日のうち使った日数だけを残します。URL、ページのタイトル、その他の閲覧履歴は保存せず、レポートにも書き込まず、このPCの外に出しません。保存したレポートには、SaaSの一覧とこの2つの値が含まれます。オフにすると結果を削除します。",
+        "オンにしない限り行いません。オンにすると、スキャンのたびにこのPCのChrome、Edge、Firefoxの閲覧履歴を読み取ります。Safariは、このMacでSanka Monitorにフルディスクアクセスがすでに許可されている場合だけ読み取ります（アプリから許可を求めることはありません）。サイト名をSanka MonitorのビジネスSaaSの一覧と照合し、見つかったSaaSごとに、最後に使った日と、直近30日のうち使った日数だけを残します。URL、ページのタイトル、その他の閲覧履歴は保存せず、レポートにも書き込まず、このPCの外に出しません。保存したレポートには、SaaSの一覧とこの2つの値が含まれます。SaaSの一覧がこのPCの外に出るのは、送信したレポートに含まれる場合と、接続中のPCで下の共有をオンにした場合だけです。オフにすると、結果と共有した内容を削除します。",
+      shareCheck: "このPCで直近30日に使ったSaaSを、ワークスペースと共有する",
+      shareExplain:
+        "初期設定はオフです。オンにすると、スキャンのたびに、ブラウザーの確認で見つかった直近30日のSaaSと、それぞれを最後に使った日をワークスペースに送信します。URL、ページのタイトル、閲覧履歴は送信しません。ワークスペースの管理者に表示されるのは、SaaSごとに使ったPCの台数だけで、どのPCかは表示されません。オフにすると共有を止め、共有した内容を削除します。送信した内容は、［プライバシー］にそのまま表示します。",
+      shareHeld:
+        "共有は保留中です。ワークスペースがSanka Monitorを一時停止しているか、このアプリの更新が必要です。それまでは何も送信しません。",
       thisScan: (summary) => `このスキャン：${summary}`,
       safariHint:
         "macOSでは、フルディスクアクセスを許可したアプリだけがSafariの閲覧履歴を読み取れます。この許可はMac内のすべてのファイルを開けるようにするため、Sanka Monitorからは求めません。",
@@ -649,6 +664,8 @@ export const STRINGS: Record<Lang, Strings> = {
         "IT部門は、会社が許可するSaaSをファイルにまとめ、デバイス管理でこのPCに配布するか、ここで選択できます。一覧にないSaaSを使っている場合は、リスクとして表示します。",
       machinePath: (path) => `デバイス管理で配布する場合の場所：${path}`,
       machineInUse: "デバイス管理で配布された会社のファイルを使用しています。",
+      workspaceInUse:
+        "ワークスペースのSanka Monitorコンソールで設定された会社のリストを使用しています。",
       chooseFile: "ファイルを選択…",
       stopUsing: "このファイルの使用をやめる",
       allowlistError: (error) => `許可リストを読み取れないため、SaaSを判定していません：${error}`,

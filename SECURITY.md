@@ -35,8 +35,11 @@ privacy permission.
   SQLite's `immutable` mode (no copy, no lock, no side files), keeps only each
   visit's host name and day in memory, and keeps per SaaS in the catalog the last
   day used and the days used in the last 30. Those two values appear in reports
-  the person saves, and so leave the computer only with a report the person sends. Safari is read only when the app
-  already has Full Disk Access, which it never requests. Web addresses, page titles
+  the person saves, and leave the computer only with a report the person sends, or,
+  on a connected PC whose person turns on SaaS sharing, as each SaaS's catalog key
+  and last day used (nothing else). Turning sharing or the browser check off,
+  Disconnect and a revoke delete what the workspace received. Safari is read only
+  when the app already has Full Disk Access, which it never requests. Web addresses, page titles
   and history are never stored, written to a report or sent. The command-line scan
   never reads browser history.
 - **Reports.** Excel, CSV and HTML reports are written only where the person

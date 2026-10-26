@@ -23,9 +23,13 @@
 //! - "Who opened your data" is read from the workspace only while connected,
 //!   when the Privacy pane asks for it: a device that is not connected sends
 //!   nothing but the update check;
-//! - the browser check (`saas.rs`) is the person's choice, off by default;
-//!   the app never sends what it finds, connected or not. Its two values per
-//!   SaaS leave the computer only inside a report the person saves or uploads.
+//! - the browser check (`saas.rs`) is the person's choice, off by default.
+//!   What it finds stays on the computer, in reports the person saves or
+//!   uploads, unless the person of a connected PC also turns on SaaS sharing:
+//!   then `sync_saas` sends the workspace which SaaS this PC used in the last
+//!   30 days and the last day each was used, recorded first in the
+//!   Transparency pane like every request. Turning sharing (or the browser
+//!   check) off, Disconnect and a revoke delete what the workspace received.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -37,7 +41,8 @@ use monitor_store::sqlite::StoreResult;
 use monitor_store::{PolicyOutcome, SqliteQueue};
 use monitor_sync::{
     AgentClient, AgentEndpoint, CheckinData, CheckinRequest, EventBatchRequest, PersonViewsData,
-    RevokeData, SoftwareUploadRequest, SyncError, PERSON_VIEWS_LIMIT,
+    RevokeData, SaasUploadRequest, SaasUseItem, SoftwareUploadRequest, SyncError,
+    WorkspaceAllowlist, PERSON_VIEWS_LIMIT,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
@@ -135,6 +140,12 @@ pub struct AgentConfig {
     /// Regular checks: rescan on this schedule and nudge about anything new.
     pub check_schedule: Option<crate::checks::CheckSchedule>,
     pub last_scheduled_check_at: Option<DateTime<Utc>>,
+    /// The person of this connected PC shares which SaaS it used in the
+    /// last 30 days with the workspace. Off by default; forgotten on
+    /// Disconnect.
+    pub saas_sharing: bool,
+    /// The workspace's SaaS allowlist, from the latest check-in.
+    pub workspace_allowlist: Option<WorkspaceAllowlist>,
 }
 
 impl AgentConfig {
@@ -205,6 +216,17 @@ impl AgentConfig {
     /// newer version. The usage-sharing consent does not apply.
     pub fn software_uploads_allowed(&self) -> bool {
         self.enrolled() && !self.kill_switch && !self.update_required()
+    }
+
+    /// The SaaS this PC used goes to the workspace only while it is
+    /// connected, its person shares it and the browser check is on, and not
+    /// while the workspace has paused the agent or needs a newer version.
+    pub fn saas_uploads_allowed(&self) -> bool {
+        self.enrolled()
+            && self.saas_sharing
+            && self.browser_saas_check
+            && !self.kill_switch
+            && !self.update_required()
     }
 
     /// A snapshot with `fingerprint` is sent when it differs from the last
@@ -392,6 +414,8 @@ pub struct StatusView {
 /// `scan_lock` comes before `config`, `last_scan`, `pending_upload` and
 /// `checks_lock`: whatever changes what a scan reads (the browser check, the
 /// allowlist) waits for the scan in flight, so it cannot bring old results back.
+/// `saas_sharing_lock` comes before `config` and `sent_payloads`, and nothing
+/// holding it waits on `scan_lock`.
 #[derive(Default)]
 pub struct AgentState {
     pub config: Mutex<AgentConfig>,
@@ -435,6 +459,12 @@ pub struct AgentState {
     pub update_check_error: Mutex<Option<String>>,
     /// Wakes the regular-check loop when its schedule changes.
     pub schedule_wake: Notify,
+    /// One request that carries the person's SaaS-sharing choice at a time (a
+    /// check-in or a SaaS upload), from reading the choice to the workspace's
+    /// answer: the workspace applies the choices in the order they were made, so
+    /// an upload already under way can't bring back what turning sharing off
+    /// deleted.
+    pub saas_sharing_lock: Mutex<()>,
     /// One read-modify-write of the regular checks' state at a time.
     pub checks_lock: Mutex<()>,
 }
@@ -586,7 +616,7 @@ async fn checkin_once(app: &AppHandle, with_posture: bool) -> Result<CheckinData
 
     let client =
         AgentClient::new(config.api_base(), AGENT_VERSION).map_err(|err| err.to_string())?;
-    let payload = CheckinRequest {
+    let mut payload = CheckinRequest {
         agent_version: AGENT_VERSION.to_string(),
         platform: device.platform.clone(),
         os_version: device.os_version.clone(),
@@ -599,6 +629,8 @@ async fn checkin_once(app: &AppHandle, with_posture: bool) -> Result<CheckinData
         } else {
             "opted_out".to_string()
         },
+        // Read just before sending (below), not with the rest of the config.
+        saas_sharing: None,
         posture: posture.clone(),
     };
 
@@ -613,24 +645,34 @@ async fn checkin_once(app: &AppHandle, with_posture: bool) -> Result<CheckinData
         Err(err) => return Err(call_failed(app, &device_id, err).await),
     };
 
-    // The check-in is about to be attempted — record the exact outbound body
-    // first so even a mid-flight failure still shows in the Transparency pane.
-    let request_id = state
-        .record_payload(
-            "/api/v2/monitor/agent/checkins",
-            serde_json::to_value(&payload).unwrap_or_default(),
+    let (request_id, answer) = {
+        let _in_order = state.saas_sharing_lock.lock().await;
+        payload.saas_sharing = Some(state.config.lock().await.saas_sharing);
+        // The check-in is about to be attempted — record the exact outbound body
+        // first so even a mid-flight failure still shows in the Transparency pane.
+        let request_id = state
+            .record_payload(
+                "/api/v2/monitor/agent/checkins",
+                serde_json::to_value(&payload).unwrap_or_default(),
+            )
+            .await;
+        (
+            request_id,
+            client.checkin(&token.access_token, &payload).await,
         )
-        .await;
+    };
 
-    match client.checkin(&token.access_token, &payload).await {
+    match answer {
         Ok(data) => {
             state.mark_payload_delivered(request_id).await;
-            let newer_minimum = {
+            let (newer_minimum, allowlist_changed) = {
                 let mut config = state.config.lock().await;
                 if config.device_id.as_deref() != Some(device_id.as_str()) {
                     // Unenrolled while the request was in flight.
                     return Err("not enrolled".to_string());
                 }
+                let allowlist_changed = config.workspace_allowlist != data.saas_allowlist;
+                config.workspace_allowlist = data.saas_allowlist.clone();
                 let minimum_changed =
                     config.min_agent_version.as_deref() != Some(data.min_agent_version.as_str());
                 config.last_checkin_at = Some(Utc::now());
@@ -643,8 +685,15 @@ async fn checkin_once(app: &AppHandle, with_posture: bool) -> Result<CheckinData
                     runtime.set_idle_threshold(data.idle_threshold_seconds);
                     runtime.set_collecting(config.collecting());
                 }
-                minimum_changed && config.update_required()
+                (
+                    minimum_changed && config.update_required(),
+                    allowlist_changed,
+                )
             };
+            if allowlist_changed {
+                // The scan shown judges its SaaS by the workspace's new list.
+                crate::saas::remark_last_scan(app).await;
+            }
             *state.last_checkin.lock().await = Some(data.clone());
             *state.last_error.lock().await = None;
             if newer_minimum {
@@ -656,6 +705,127 @@ async fn checkin_once(app: &AppHandle, with_posture: bool) -> Result<CheckinData
             Ok(data)
         }
         Err(err) => Err(call_failed(app, &device_id, err).await),
+    }
+}
+
+/// Sends the workspace the SaaS this PC used in the last 30 days, from the
+/// scan the app holds, after a scan, in the background.
+pub fn spawn_saas_sync(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = sync_saas(&app).await;
+    });
+}
+
+/// The SaaS summary this PC shares: each SaaS the browser check found in the
+/// 30 days ending on the scan's day, and the last day it was used. Nothing
+/// else: no desktop apps (the workspace has the installed software), no day
+/// counts, no web addresses.
+pub fn saas_summary(report: &monitor_report::ScanReport) -> SaasUploadRequest {
+    let collected_on = report.scanned_at.with_timezone(&chrono::Local).date_naive();
+    let window_start = collected_on - chrono::Duration::days(29);
+    let items = report
+        .saas
+        .iter()
+        .filter_map(|record| {
+            let used = record.browser?;
+            (used.last_used_on >= window_start && used.last_used_on <= collected_on).then(|| {
+                SaasUseItem {
+                    key: record.key.clone(),
+                    last_used_on: used.last_used_on,
+                }
+            })
+        })
+        .collect();
+    SaasUploadRequest {
+        sharing: true,
+        collected_on,
+        items,
+    }
+}
+
+/// Sends the SaaS summary of the scan the app holds when its person shares
+/// it (see [`AgentConfig::saas_uploads_allowed`]). A scan without the
+/// browser check's results sends nothing: it has no summary to share.
+pub async fn sync_saas(app: &AppHandle) -> Result<(), String> {
+    let state: State<'_, AgentState> = app.state();
+    let config = state.config.lock().await.clone();
+    let Some(device_id) = config.device_id.clone() else {
+        return Ok(());
+    };
+    if !config.saas_uploads_allowed() {
+        return Ok(());
+    }
+    let payload = match state.last_scan.lock().await.as_ref() {
+        Some(report) if report.saas_check.browsers.is_some() => saas_summary(report),
+        _ => return Ok(()),
+    };
+    send_saas(app, &config, &device_id, &payload).await
+}
+
+/// Tells the workspace to delete the SaaS this PC shared (the person turned
+/// sharing or the browser check off). Without a connection the next
+/// check-in, which says `saasSharing: false`, does the same.
+pub async fn send_saas_sharing_off(app: &AppHandle) -> Result<(), String> {
+    let state: State<'_, AgentState> = app.state();
+    let config = state.config.lock().await.clone();
+    let Some(device_id) = config.device_id.clone() else {
+        return Ok(());
+    };
+    let payload = SaasUploadRequest {
+        sharing: false,
+        collected_on: Utc::now().with_timezone(&chrono::Local).date_naive(),
+        items: Vec::new(),
+    };
+    send_saas(app, &config, &device_id, &payload).await
+}
+
+async fn send_saas(
+    app: &AppHandle,
+    config: &AgentConfig,
+    device_id: &str,
+    payload: &SaasUploadRequest,
+) -> Result<(), String> {
+    let state: State<'_, AgentState> = app.state();
+    let secret = read_device_secret(device_id.to_string()).await?;
+    let client =
+        AgentClient::new(config.api_base(), AGENT_VERSION).map_err(|err| err.to_string())?;
+    let token = match client.issue_token(device_id, &secret).await {
+        Ok(token) => token,
+        Err(err) => return Err(call_failed(app, device_id, err).await),
+    };
+    let (request_id, answer) = {
+        let _in_order = state.saas_sharing_lock.lock().await;
+        // The person may have changed their mind, or the PC disconnected, meanwhile.
+        {
+            let current = state.config.lock().await;
+            let still = current.device_id.as_deref() == Some(device_id)
+                && if payload.sharing {
+                    current.saas_uploads_allowed()
+                } else {
+                    !current.saas_sharing
+                };
+            if !still {
+                return Ok(());
+            }
+        }
+        let request_id = state
+            .record_payload(
+                &AgentEndpoint::Saas.path(),
+                serde_json::to_value(payload).unwrap_or_default(),
+            )
+            .await;
+        (
+            request_id,
+            client.upload_saas(&token.access_token, payload).await,
+        )
+    };
+    match answer {
+        Ok(_) => {
+            state.mark_payload_delivered(request_id).await;
+            Ok(())
+        }
+        Err(err) => Err(call_failed(app, device_id, err).await),
     }
 }
 
@@ -1489,6 +1659,91 @@ mod tests {
             assert_eq!(sent.len(), TRANSPARENCY_LIMIT);
             assert!(sent.iter().all(|payload| !payload.delivered));
         });
+    }
+
+    #[test]
+    fn the_saas_summary_goes_only_where_its_person_shares_it_and_holds_only_key_and_day() {
+        let mut config = AgentConfig {
+            device_id: Some("device-1".into()),
+            browser_saas_check: true,
+            ..AgentConfig::default()
+        };
+        assert!(!config.saas_uploads_allowed(), "sharing is off by default");
+        config.saas_sharing = true;
+        assert!(config.saas_uploads_allowed());
+        for blocked in [
+            AgentConfig {
+                browser_saas_check: false,
+                ..config.clone()
+            },
+            AgentConfig {
+                kill_switch: true,
+                ..config.clone()
+            },
+            AgentConfig {
+                min_agent_version: Some("999.0.0".into()),
+                ..config.clone()
+            },
+            config.disconnected(),
+        ] {
+            assert!(!blocked.saas_uploads_allowed(), "{blocked:?}");
+        }
+        assert!(
+            !config.unenrolled().saas_sharing,
+            "Disconnect forgets the choice"
+        );
+
+        // A scan whose browser check found Slack yesterday and ChatGPT 40
+        // days ago, and that has Dropbox installed: only Slack is shared.
+        use monitor_saas::{BrowserUse, SaasCatalog};
+        let at = Utc.with_ymd_and_hms(2026, 10, 26, 3, 0, 0).unwrap();
+        let today = at.with_timezone(&chrono::Local).date_naive();
+        let mut report = monitor_report::ScanReport::build(
+            monitor_report::DeviceRecord {
+                hostname: "PC-1".into(),
+                platform: "macos".into(),
+                os_version: "26.0".into(),
+                os_edition: None,
+                device_model: None,
+                serial_number: None,
+            },
+            Vec::new(),
+            vec![monitor_inventory::InstalledSoftware::new(
+                monitor_inventory::SoftwareSource::MacosApp,
+                "com.getdropbox.dropbox",
+                "Dropbox",
+                None,
+                None,
+            )
+            .unwrap()],
+            monitor_findings::Catalog::bundled(),
+            today,
+            at,
+            "0.4.0",
+        );
+        let used = |days_ago: i64| BrowserUse {
+            last_used_on: today - chrono::Duration::days(days_ago),
+            days_used30: 1,
+        };
+        let browser = monitor_saas::history::BrowserScan {
+            browsers: Vec::new(),
+            uses: std::collections::BTreeMap::from([
+                ("slack".to_string(), used(1)),
+                ("chatgpt".to_string(), used(40)),
+            ]),
+        };
+        report.set_saas(SaasCatalog::bundled(), Some(&browser), None);
+        assert_eq!(
+            saas_summary(&report),
+            SaasUploadRequest {
+                sharing: true,
+                collected_on: today,
+                items: vec![SaasUseItem {
+                    key: "slack".into(),
+                    last_used_on: today - chrono::Duration::days(1),
+                }],
+            }
+        );
     }
 
     #[test]

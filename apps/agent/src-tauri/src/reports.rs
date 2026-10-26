@@ -229,6 +229,7 @@ pub async fn scan_device(app: AppHandle, lang: Lang) -> Result<ScanView, String>
     crate::checks::record_scan(&app, &report).await;
     let view = scan_view(&report, lang);
     *state.last_scan.lock().await = Some(report);
+    crate::agent::spawn_saas_sync(&app);
     Ok(view)
 }
 

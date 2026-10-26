@@ -251,6 +251,7 @@ export default function App() {
           lang={lang}
           scan={scan}
           scanning={scanning}
+          connected={status.enrolled}
           settings={saas}
           onSettings={setSaas}
           setError={setError}
