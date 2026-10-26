@@ -181,8 +181,11 @@ export type LocalNudge = {
 
 export type SaasSettings = {
   browserCheck: boolean;
+  /** This connected PC shares the SaaS it used with its workspace. */
+  saasSharing: boolean;
+  saasSharingHeld: boolean;
   allowlist: {
-    origin: "command_line" | "machine" | "app" | null;
+    origin: "command_line" | "machine" | "workspace" | "app" | null;
     name: string | null;
     allowed: number;
     unknown: string[];

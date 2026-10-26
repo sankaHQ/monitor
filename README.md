@@ -38,9 +38,12 @@ local-first:
   the app, placed by device management, or `--allowlist` on the command line) marks
   each SaaS allowed or not; SaaS not on it become shadow IT / shadow AI risks.
   Optional **regular checks** rescan daily or weekly and nudge in the window and
-  the tray when something new appears. The app never sends any of this on its own,
-  connected or not; the SaaS list leaves the computer only inside a report the
-  person saves or sends.
+  the tray when something new appears. By default none of this leaves the computer:
+  the SaaS list goes out inside a report the person saves or sends, or, on a
+  connected PC whose person turns on SaaS sharing, as each SaaS used in the last 30
+  days and the last day it was used (`POST /api/v2/monitor/agent/saas`, listed in the
+  Privacy pane). The workspace console shows only how many PCs use each SaaS; the
+  company's allowlist set there reaches connected PCs with each check-in.
 - **Fleet scan.** `sanka-monitor-agent scan --out <folder>` writes one CSV per PC
   for device management tools, and the workbooks in `templates/fleet/` merge a
   folder of them with Power Query. See [docs/fleet-scan.md](docs/fleet-scan.md).

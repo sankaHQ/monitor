@@ -602,6 +602,10 @@ pub fn allowlist_summary(summary: Option<&crate::AllowlistSummary>, lang: Lang) 
             lang.pick("given on the command line", "コマンドラインで指定")
         }
         AllowlistOrigin::Machine => lang.pick("placed by device management", "デバイス管理で配布"),
+        AllowlistOrigin::Workspace => lang.pick(
+            "set in the workspace console",
+            "ワークスペースのコンソールで設定",
+        ),
         AllowlistOrigin::App => lang.pick("chosen in the app", "アプリで選択"),
     };
     let mut parts = Vec::new();

@@ -23,8 +23,9 @@ the PC unless the person chooses otherwise; contributions should keep it that wa
   sends nothing in local mode. Do not add fields that could carry window titles,
   URLs, document or file contents, keystrokes, screen captures or install paths.
   The browser check keeps per SaaS only the last day used and the days used in the
-  last 30 (`BrowserUse`); do not widen it or `SaasRecord`, and do not let the
-  command-line scan read browser history. A change to what leaves the computer
+  last 30 (`BrowserUse`); do not widen it, `SaasRecord` or the shared
+  `SaasUploadRequest` (key and last day used), and do not let the command-line
+  scan read browser history. A change to what leaves the computer
   needs an issue and a maintainer's agreement first.
 - **SaaS catalog.** `crates/monitor-saas/catalog/saas.json` lists each SaaS once.
   Web patterns name the hosts the product runs on, not the vendor's marketing,

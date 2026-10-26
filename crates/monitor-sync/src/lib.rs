@@ -9,6 +9,10 @@
 //! works the same way, with a one-time code from the browser plus its PKCE
 //! verifier instead of an enrollment code. Every response is the standard
 //! `{success, data, meta}` envelope.
+//!
+//! The SaaS a connected PC used leaves only after its person turns on
+//! sharing (`/agent/saas`): each SaaS's catalog key and the last day it was
+//! used, nothing else ([`SaasUploadRequest`]).
 
 use chrono::{DateTime, NaiveDate, Utc};
 use monitor_core::{AGENT_API_BASE_PATH, DESKTOP_API_BASE_PATH};
@@ -36,6 +40,9 @@ pub enum AgentEndpoint {
     /// Read-only: each time someone in the workspace opened this person's
     /// daily app presence, with the reason they gave. Sends nothing.
     PersonViews,
+    /// The SaaS this PC used in the last 30 days, after its person turned
+    /// on sharing; `sharing: false` deletes what it shared.
+    Saas,
 }
 
 impl AgentEndpoint {
@@ -48,6 +55,7 @@ impl AgentEndpoint {
             AgentEndpoint::Revoke => "revoke",
             AgentEndpoint::Software => "software",
             AgentEndpoint::PersonViews => "person-views",
+            AgentEndpoint::Saas => "saas",
         };
         format!("{AGENT_API_BASE_PATH}/{leaf}")
     }
@@ -207,6 +215,10 @@ pub struct CheckinRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub os_edition: Option<String>,
     pub sharing_consent: String,
+    /// Whether the person shares the SaaS this PC used; `false` makes the
+    /// workspace delete what was shared.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub saas_sharing: Option<bool>,
     pub posture: Vec<PostureCheckResult>,
 }
 
@@ -242,6 +254,47 @@ pub struct CheckinData {
     pub idle_threshold_seconds: u64,
     #[serde(default)]
     pub nudges: Vec<NudgeData>,
+    /// The workspace's SaaS allowlist, set in its console.
+    #[serde(default)]
+    pub saas_allowlist: Option<WorkspaceAllowlist>,
+}
+
+/// The SaaS the workspace allows, by catalog key, as its console sets them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceAllowlist {
+    #[serde(default)]
+    pub name: Option<String>,
+    pub allowed: Vec<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// One SaaS this PC used: its catalog key and the last day it was used.
+/// Nothing else, and no room for more (see the wire-shape test).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaasUseItem {
+    pub key: String,
+    pub last_used_on: NaiveDate,
+}
+
+/// The PC's whole SaaS summary for the workspace. `sharing: false` carries
+/// no items and deletes what the PC shared before.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaasUploadRequest {
+    pub sharing: bool,
+    /// The PC's local date: the 30 days end on it.
+    pub collected_on: NaiveDate,
+    pub items: Vec<SaasUseItem>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaasUploadData {
+    pub stored: u64,
+    pub ignored: u64,
+    pub deleted: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -533,6 +586,15 @@ impl AgentClient {
             .await
     }
 
+    pub async fn upload_saas(
+        &self,
+        runtime_token: &str,
+        payload: &SaasUploadRequest,
+    ) -> SyncResult<SaasUploadData> {
+        self.post_json(AgentEndpoint::Saas, payload, Some(runtime_token))
+            .await
+    }
+
     /// Revokes this device on the server and deletes its usage records there.
     /// The runtime token dies with the device, so a repeat answers 403 and
     /// `/agent/token` then answers [`DEVICE_REVOKED`].
@@ -760,6 +822,43 @@ mod tests {
             AgentEndpoint::PersonViews.path(),
             "/api/v2/monitor/agent/person-views"
         );
+        assert_eq!(AgentEndpoint::Saas.path(), "/api/v2/monitor/agent/saas");
+    }
+
+    /// The privacy invariant as a test: a SaaS upload carries exactly these
+    /// fields, and each SaaS only its key and last day used.
+    #[test]
+    fn a_saas_upload_has_no_room_for_more_than_key_and_day() {
+        let day = NaiveDate::from_ymd_opt(2026, 10, 26).unwrap();
+        let upload = SaasUploadRequest {
+            sharing: true,
+            collected_on: day,
+            items: vec![SaasUseItem {
+                key: "slack".into(),
+                last_used_on: day,
+            }],
+        };
+        assert_eq!(
+            serde_json::to_value(&upload).unwrap(),
+            serde_json::json!({
+                "sharing": true,
+                "collectedOn": "2026-10-26",
+                "items": [{"key": "slack", "lastUsedOn": "2026-10-26"}],
+            })
+        );
+        let allowlist: CheckinData = serde_json::from_value(serde_json::json!({
+            "killSwitch": false,
+            "minAgentVersion": "0.1.1",
+            "checkinIntervalSeconds": 3600,
+            "idleThresholdSeconds": 300,
+            "nudges": [],
+            "saasAllowlist": {"name": "Example K.K.", "allowed": ["slack"], "updatedAt": "2026-10-26T00:00:00Z"},
+        }))
+        .unwrap();
+        assert_eq!(
+            allowlist.saas_allowlist.map(|list| list.allowed),
+            Some(vec!["slack".to_string()])
+        );
     }
 
     #[test]
@@ -774,6 +873,7 @@ mod tests {
             device_model: None,
             os_edition: None,
             sharing_consent: "opted_out".into(),
+            saas_sharing: None,
             posture: vec![PostureCheckResult {
                 id: PostureCheckId::Gatekeeper,
                 pass: Some(true),

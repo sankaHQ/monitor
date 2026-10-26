@@ -81,6 +81,7 @@ fn main() {
             account::sign_out,
             saas::get_saas_settings,
             saas::set_browser_check,
+            saas::set_saas_sharing,
             saas::choose_allowlist,
             saas::clear_allowlist,
             saas::open_migration_page,

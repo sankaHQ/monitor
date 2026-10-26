@@ -178,7 +178,7 @@ pub async fn scan_now(app: &AppHandle) -> Result<ScanReport, String> {
         .lock()
         .await
         .browser_saas_check;
-    let allowlist = saas::current_allowlist(app);
+    let allowlist = saas::current_allowlist(app).await;
     tauri::async_runtime::spawn_blocking(move || {
         let now = Utc::now();
         let mut report = crate::scan::run_scan(now);
@@ -237,6 +237,7 @@ async fn run_regular_check(app: &AppHandle) -> Result<(), String> {
     record_scan(app, &report).await;
     let at = report.scanned_at;
     *state.last_scan.lock().await = Some(report);
+    crate::agent::spawn_saas_sync(app);
     let mut config = state.config.lock().await;
     let mut next = config.clone();
     next.last_scheduled_check_at = Some(at);
