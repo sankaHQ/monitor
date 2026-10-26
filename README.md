@@ -18,13 +18,13 @@ local-first:
   pasted). Signing in sends only the one-time code, its verifier, the app version
   and the platform; the device credential stays in the OS keychain. The app builds
   the Excel report from the current scan, or takes an edited Sanka Monitor
-  workbook, shows exactly what will be sent (device, risk counts, program counts,
+  workbook, shows what will be sent (device, risk counts, program counts,
   file name, size and SHA-256; the file is sent as
   `sanka-monitor-report_<date-time>.xlsx`, never under the computer's name) and
-  sends those bytes and counts to
+  sends those bytes and counts, the app version and, for a scan, its report ID to
   `POST /api/v2/monitor/desktop/reports` with a one-hour token. Sanka's receipt
-  carries its own SHA-256 to compare, and every request appears in the Privacy
-  pane. Without an account, the person emails the saved Excel instead.
+  carries its own SHA-256 to compare. The sign-in and each sent report appear in
+  the Privacy pane (the one-hour token requests and sign-out do not). Without an account, the person emails the saved Excel instead.
 - **The SaaS the computer uses.** Each scan maps installed desktop apps (Slack,
   Zoom, ChatGPT, …) to their SaaS in the catalog bundled in the app
   (`crates/monitor-saas/catalog/saas.json`: product, vendor, category, AI flag, web

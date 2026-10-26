@@ -265,7 +265,7 @@ export const STRINGS: Record<Lang, Strings> = {
     send: {
       title: "Send to Sanka",
       intro:
-        "Your Sanka contact reviews the risks with you. Sanka Monitor builds the Excel report from this scan and shows exactly what will be sent; nothing leaves this computer until you press Send.",
+        "Your Sanka contact reviews the risks with you. Sanka Monitor builds the Excel report from this scan and shows what will be sent; nothing leaves this computer until you press Send.",
       signInTitle: "Sign in to send",
       signInIntro:
         "Sending uses your Sanka account, so the report reaches your Sanka contact with your name and company. Signing in opens your browser: use Google, Microsoft or email, or create a free account. Scanning never needs an account.",
@@ -277,7 +277,7 @@ export const STRINGS: Record<Lang, Strings> = {
       signingIn: "Signing in…",
       signedInAs: (who, company) => `Signed in as ${who}${company ? ` · ${company}` : ""}`,
       signOut: "Sign out",
-      whatIsSent: "Sanka receives exactly this, and your note if you add one:",
+      whatIsSent: "Sanka receives this, the app version and, for a scan, its report ID, and your note if you add one:",
       device: "Device",
       risks: "Risks",
       riskCounts: (high, medium, low) => `${high} high · ${medium} medium · ${low} low`,
@@ -362,7 +362,7 @@ export const STRINGS: Record<Lang, Strings> = {
     privacy: {
       leavesTitle: "What leaves this computer",
       leavesConnected:
-        "This computer is connected to a workspace: check-ins send its security checks and installed programs, and app usage and the SaaS it used only if you turned that sharing on. Every request is listed below, exactly as sent.",
+        "This computer is connected to a workspace: check-ins send its security checks and installed programs, and app usage and the SaaS it used only if you turned that sharing on. Check-ins, uploads, the sign-in and sent reports are listed below, exactly as sent.",
       leavesLocal:
         "Nothing, unless you send a report to Sanka yourself. Scans and reports stay on this computer. You sign in to send in your browser; the app itself then sends Sanka only a one-time sign-in code, its version and whether this is a Mac or a Windows PC. The only automatic network request is the update check below, which downloads the latest version number and sends nothing about this computer.",
       updateChecks:
@@ -412,7 +412,7 @@ export const STRINGS: Record<Lang, Strings> = {
         "Off unless you turn it on. When it is on, each scan reads the history of Chrome, Edge and Firefox on this computer, and Safari's only if this Mac already gives Sanka Monitor Full Disk Access (the app never asks for it). It matches each site's name against Sanka Monitor's list of business SaaS. For each SaaS it finds, it keeps only the last day you used it and on how many of the last 30 days. Web addresses, page titles and the rest of your history are not stored, are never written to a report and never leave this computer. Reports you save include the SaaS list with those two values. The SaaS list leaves this computer only in a report you send, or, on a connected PC, if you turn on sharing with your workspace below. Turning this off deletes the results, and what you shared.",
       shareCheck: "Share which SaaS this PC used in the last 30 days with my workspace",
       shareExplain:
-        "Off by default. When it is on, after each scan Sanka Monitor sends your workspace the SaaS the browser check found in the last 30 days and the last day each was used: never web addresses, page titles or your history. Your workspace's admins see only how many PCs used each SaaS, never which ones. Turning this off stops sharing and deletes what was shared. Every request is listed under Privacy, exactly as sent.",
+        "Off by default. When it is on, after each scan Sanka Monitor sends your workspace the SaaS the browser check found in the last 30 days and the last day each was used: never web addresses, page titles or your history. Your workspace's admins see only how many PCs used each SaaS, never which ones. Turning this off stops sharing and deletes what was shared. What it sends is listed under Privacy, exactly as sent.",
       shareHeld:
         "Sharing is on hold: your workspace has paused Sanka Monitor, or this app needs an update. Nothing is sent until then.",
       thisScan: (summary) => `This scan: ${summary}`,
@@ -513,7 +513,7 @@ export const STRINGS: Record<Lang, Strings> = {
     send: {
       title: "Sankaに送信",
       intro:
-        "Sankaの担当者がリスクを一緒に確認します。Sanka MonitorがこのスキャンからExcelのレポートを作成し、送信する内容をそのまま表示します。［送信］を押すまで、このPCからは何も送信しません。",
+        "Sankaの担当者がリスクを一緒に確認します。Sanka MonitorがこのスキャンからExcelのレポートを作成し、送信する内容を表示します。［送信］を押すまで、このPCからは何も送信しません。",
       signInTitle: "サインインして送信",
       signInIntro:
         "送信にはSankaのアカウントを使います。レポートは、あなたの名前と会社名でSankaの担当者に届きます。サインインはブラウザーで行います。Google、Microsoft、メールアドレスのいずれかでサインインするか、無料のアカウントを作成してください。スキャンにアカウントは不要です。",
@@ -525,7 +525,7 @@ export const STRINGS: Record<Lang, Strings> = {
       signingIn: "サインイン中…",
       signedInAs: (who, company) => `${who}${company ? `（${company}）` : ""}としてサインイン中`,
       signOut: "サインアウト",
-      whatIsSent: "Sankaが受け取るのは、次の内容と、入力した場合はメモだけです。",
+      whatIsSent: "Sankaが受け取るのは、次の内容と、アプリのバージョン、スキャンの場合はレポートのID、入力した場合はメモだけです。",
       device: "デバイス",
       risks: "リスク",
       riskCounts: (high, medium, low) => `高 ${high}・中 ${medium}・低 ${low}`,
@@ -611,7 +611,7 @@ export const STRINGS: Record<Lang, Strings> = {
     privacy: {
       leavesTitle: "このPCの外に出る情報",
       leavesConnected:
-        "このPCはワークスペースに接続しています。チェックインでセキュリティチェックとインストール済みのソフトウェアを送信し、アプリの利用データと使ったSaaSは、それぞれ共有をオンにした場合だけ送信します。送信したリクエストは、下にそのまま表示します。",
+        "このPCはワークスペースに接続しています。チェックインでセキュリティチェックとインストール済みのソフトウェアを送信し、アプリの利用データと使ったSaaSは、それぞれ共有をオンにした場合だけ送信します。チェックイン、アップロード、サインイン、送信したレポートは、下に送信したとおり表示します。",
       leavesLocal:
         "Sankaにレポートを送信しない限り、ありません。スキャン結果とレポートはこのPCに残ります。送信のためのサインインはブラウザーで行い、アプリがSankaに送るのは、ワンタイムのサインインコード、アプリのバージョン、MacかWindowsかの区別だけです。自動で行う通信は下のアップデートの確認だけで、最新のバージョン番号を取得し、このPCの情報は送信しません。",
       updateChecks:
