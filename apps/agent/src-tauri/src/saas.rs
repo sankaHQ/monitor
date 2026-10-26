@@ -176,6 +176,10 @@ pub async fn get_saas_settings(app: AppHandle, lang: Lang) -> SaasSettingsView {
     settings_view(&app, lang).await
 }
 
+/// Tells the window the scan the app holds changed outside a command it made
+/// (a check-in brought a new workspace allowlist), so it shows it again.
+pub const SCAN_EVENT: &str = "scan-changed";
+
 /// Re-marks the scan the app holds against the allowlist now in force,
 /// after any scan in flight.
 pub(crate) async fn remark_last_scan(app: &AppHandle) {

@@ -89,6 +89,20 @@ export default function App() {
       .catch(() => {});
   }, [lang]);
 
+  // A check-in that brought a new workspace allowlist re-marked the scan the
+  // app holds: show it, and the list now in force, at once.
+  useEffect(() => {
+    const unlisten = listen("scan-changed", () => {
+      refreshScan();
+      invoke<SaasSettings>("get_saas_settings", { lang })
+        .then(setSaas)
+        .catch(() => {});
+    });
+    return () => {
+      unlisten.then((stop) => stop()).catch(() => {});
+    };
+  }, [lang, refreshScan]);
+
   // SaaS settings and regular-check nudges; a regular check that ran since
   // the last look brings its scan with it.
   useEffect(() => {

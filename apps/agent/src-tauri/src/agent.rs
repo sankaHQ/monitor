@@ -45,7 +45,7 @@ use monitor_sync::{
     WorkspaceAllowlist, PERSON_VIEWS_LIMIT,
 };
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter as _, Manager, State};
 use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_opener::OpenerExt as _;
 use tokio::sync::{Mutex, Notify};
@@ -691,8 +691,10 @@ async fn checkin_once(app: &AppHandle, with_posture: bool) -> Result<CheckinData
                 )
             };
             if allowlist_changed {
-                // The scan shown judges its SaaS by the workspace's new list.
+                // The scan shown judges its SaaS by the workspace's new list,
+                // in the window too.
                 crate::saas::remark_last_scan(app).await;
+                let _ = app.emit(crate::saas::SCAN_EVENT, ());
             }
             *state.last_checkin.lock().await = Some(data.clone());
             *state.last_error.lock().await = None;
