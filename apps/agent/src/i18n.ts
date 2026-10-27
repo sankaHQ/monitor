@@ -362,9 +362,9 @@ export const STRINGS: Record<Lang, Strings> = {
     privacy: {
       leavesTitle: "What leaves this computer",
       leavesConnected:
-        "This computer is connected to a workspace: check-ins send its security checks and installed programs, and app usage and the SaaS it used only if you turned that sharing on. Check-ins and uploads are listed below, exactly as sent, and so are your Sanka account's sign-in, token requests, sent reports and sign-out, with credentials hidden. The token request that comes first each time the app contacts your workspace is not listed.",
+        "This computer is connected to a workspace: check-ins send its security checks and installed programs, and app usage and the SaaS it used only if you turned that sharing on. Check-ins and uploads are listed below, exactly as sent, and so are your Sanka account's sign-in, token requests, sent reports and sign-out, with the sign-in code, its verifier and the device secret hidden. The token request that comes first each time the app contacts your workspace is not listed.",
       leavesLocal:
-        "Nothing, unless you send a report to Sanka yourself. Scans and reports stay on this computer. You sign in to send in your browser; the app itself then sends Sanka only a one-time sign-in code, its version and whether this is a Mac or a Windows PC. The only automatic network request is the update check below, which downloads the latest version number and sends nothing about this computer.",
+        "Nothing, unless you sign in to send reports to Sanka. Scans and reports stay on this computer. You sign in to send in your browser; to finish signing in, the app itself sends Sanka only a one-time sign-in code with its verifier, its version and whether this is a Mac or a Windows PC. Sending a report and signing out use a one-hour token, which the app gets in exchange for its credential (a device ID and secret) and its version. Sign out then revokes the credential in Sanka, and a cancelled or replaced sign-in is revoked the same way. These requests and the reports you send are listed below, exactly as sent, with the code, verifier and secret hidden. The only automatic network request is the update check below, which downloads the latest version number and sends nothing about this computer.",
       updateChecks:
         "Check for updates automatically (hourly, from github.com/sankaHQ/monitor-releases).",
       lastCheck: (at) => ` Last check: ${at}.`,
@@ -611,9 +611,9 @@ export const STRINGS: Record<Lang, Strings> = {
     privacy: {
       leavesTitle: "このPCの外に出る情報",
       leavesConnected:
-        "このPCはワークスペースに接続しています。チェックインでセキュリティチェックとインストール済みのソフトウェアを送信し、アプリの利用データと使ったSaaSは、それぞれ共有をオンにした場合だけ送信します。チェックインとアップロードに加え、Sankaのアカウントで行うサインイン、トークンの要求、レポートの送信、サインアウトも、下に送信したとおり表示します（認証情報は伏せて表示します）。ワークスペースと通信するたびに最初に行うトークンの要求は表示しません。",
+        "このPCはワークスペースに接続しています。チェックインでセキュリティチェックとインストール済みのソフトウェアを送信し、アプリの利用データと使ったSaaSは、それぞれ共有をオンにした場合だけ送信します。チェックインとアップロードに加え、Sankaのアカウントで行うサインイン、トークンの要求、レポートの送信、サインアウトも、下に送信したとおり表示します（サインインコード、検証用の値、シークレットは伏せて表示します）。ワークスペースと通信するたびに最初に行うトークンの要求は表示しません。",
       leavesLocal:
-        "Sankaにレポートを送信しない限り、ありません。スキャン結果とレポートはこのPCに残ります。送信のためのサインインはブラウザーで行い、アプリがSankaに送るのは、ワンタイムのサインインコード、アプリのバージョン、MacかWindowsかの区別だけです。自動で行う通信は下のアップデートの確認だけで、最新のバージョン番号を取得し、このPCの情報は送信しません。",
+        "Sankaにレポートを送るためにサインインしない限り、ありません。スキャン結果とレポートはこのPCに残ります。送信のためのサインインはブラウザーで行い、サインインを完了するためにアプリがSankaに送るのは、ワンタイムのサインインコードとその検証用の値、アプリのバージョン、MacかWindowsかの区別だけです。レポートの送信とサインアウトには1時間有効なトークンを使い、アプリはトークンを受け取るために、認証情報（デバイスIDとシークレット）とアプリのバージョンを送ります。サインアウトでは、Sankaでその認証情報を無効にします。途中でキャンセルしたり、やり直したりしたサインインの認証情報も、同じように無効にします。これらの通信と送信したレポートは、下に送信したとおり表示します（サインインコード、検証用の値、シークレットは伏せて表示します）。自動で行う通信は下のアップデートの確認だけで、最新のバージョン番号を取得し、このPCの情報は送信しません。",
       updateChecks:
         "アップデートを自動で確認する（1時間ごと、github.com/sankaHQ/monitor-releases から）。",
       lastCheck: (at) => `前回の確認：${at}。`,
