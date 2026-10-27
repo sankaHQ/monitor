@@ -4,7 +4,7 @@
 
 Sanka Monitor is pre-1.0. Security fixes go into the latest release, published on
 this repository's [releases](https://github.com/sankaHQ/monitor/releases) and on
-`https://downloads.sanka.com/monitor/`; older releases do not receive backports. The
+`https://release.sanka.com/monitor/`; older releases do not receive backports. The
 app updates itself from that feed unless the person, or device management, turned
 automatic update checks off. Releases up to 0.3.x were published on
 [sankaHQ/monitor-releases](https://github.com/sankaHQ/monitor-releases), now archived.

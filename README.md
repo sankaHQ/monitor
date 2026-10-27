@@ -109,7 +109,7 @@ Sanka Monitor is local-first:
   workbook in the IT資産台帳 (IT asset ledger) layout, a CSV and a one-page IT risk
   report (HTML, prints to one A4 page), in Japanese or English, where the person
   chooses. Nothing is uploaded. The only automatic network request is the hourly
-  update check, which downloads `latest.json` from downloads.sanka.com (or this
+  update check, which downloads `latest.json` from release.sanka.com (or this
   repository's latest release), sends nothing about the computer, and can be turned
   off under Privacy.
 - **Send to Sanka, on the person's word.** Sending signs in once with a Sanka
@@ -259,7 +259,7 @@ never committed.
 
 `Release (macOS + Windows)` (`.github/workflows/release.yml`, manual dispatch) builds
 and signs everything and publishes it as release `vX.Y.Z`, this repository's latest
-release, and on `https://downloads.sanka.com/monitor/`:
+release, and on `https://release.sanka.com/monitor/`:
 
 - **macOS, Apple silicon (arm64):** the default download, signed with the Developer ID,
   notarized and stapled.
@@ -304,7 +304,11 @@ ruleset for `v*` in the repository settings.
 | `TAURI_UPDATER_PRIVATE_KEY`, `TAURI_UPDATER_PRIVATE_KEY_PASSWORD` | Updater signatures (`.sig`) |
 | `MONITOR_AZURE_TENANT_ID`, `MONITOR_AZURE_CLIENT_ID`, `MONITOR_AZURE_CLIENT_SECRET` | Windows: the signing credential |
 | `MONITOR_AZURE_SIGNING_ENDPOINT`, `MONITOR_AZURE_SIGNING_ACCOUNT`, `MONITOR_AZURE_SIGNING_PROFILE` | Windows: the Artifact Signing account and certificate profile |
-| `MONITOR_CDN_ACCESS_KEY_ID`, `MONITOR_CDN_SECRET_ACCESS_KEY`, `MONITOR_CDN_BUCKET` | Publishing: the Tigris bucket behind downloads.sanka.com |
+| `MONITOR_CDN_ACCESS_KEY_ID`, `MONITOR_CDN_SECRET_ACCESS_KEY`, `MONITOR_CDN_BUCKET` | Publishing: the Tigris bucket behind release.sanka.com |
+
+The bucket is public, with `release.sanka.com` set as its custom domain and a CNAME from
+`release.sanka.com` to `<bucket>.t3.tigrisbucket.io`. The S3 endpoint defaults to
+`https://t3.storage.dev`; set the repository variable `MONITOR_CDN_ENDPOINT` to use another.
 | `MONITOR_RELEASES_TOKEN` | Only for `bridge_to_monitor_releases` (see below) |
 
 A dry run (the default) builds, signs and notarizes everything and uploads the release

@@ -3,7 +3,7 @@
 # for every Mac (universal), a signed and notarized .pkg for device management, and an
 # Authenticode-signed Windows installer (NSIS) and per-machine MSI. Every file gets a
 # SHA-256 in SHA256SUMS and a GitHub build-provenance attestation, and is uploaded to
-# downloads.sanka.com/monitor/ before the GitHub release is created here. The updater
+# release.sanka.com/monitor/ before the GitHub release is created here. The updater
 # reads latest.json from the CDN first and from this repository's latest release second.
 # channels/stable.json, which sanka.com's download links follow, is written last.
 #
@@ -114,7 +114,7 @@ jobs:
             MONITOR_AZURE_TENANT_ID MONITOR_AZURE_CLIENT_ID MONITOR_AZURE_CLIENT_SECRET \
             MONITOR_AZURE_SIGNING_ENDPOINT MONITOR_AZURE_SIGNING_ACCOUNT MONITOR_AZURE_SIGNING_PROFILE
           if [ "$DRY_RUN" != "true" ]; then
-            require "uploading to downloads.sanka.com" \
+            require "uploading to release.sanka.com" \
               MONITOR_CDN_ACCESS_KEY_ID MONITOR_CDN_SECRET_ACCESS_KEY MONITOR_CDN_BUCKET
             if [ "$BRIDGE" = "true" ]; then
               require "the bridge release in sankaHQ/monitor-releases (fine-grained PAT, contents:write)" \
@@ -468,7 +468,7 @@ jobs:
       id-token: write
       attestations: write
     env:
-      CDN_BASE: https://downloads.sanka.com/monitor
+      CDN_BASE: https://release.sanka.com/monitor
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -508,13 +508,13 @@ jobs:
       # Versioned files first, then the stable-named copies and latest.json; the
       # GitHub release next; channels/stable.json last, so a download link never
       # points at a file that isn't there yet.
-      - name: Upload to downloads.sanka.com
+      - name: Upload to release.sanka.com
         if: ${{ !inputs.dry_run }}
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.MONITOR_CDN_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.MONITOR_CDN_SECRET_ACCESS_KEY }}
           AWS_REGION: auto
-          AWS_ENDPOINT_URL_S3: https://fly.storage.tigris.dev
+          AWS_ENDPOINT_URL_S3: ${{ vars.MONITOR_CDN_ENDPOINT || 'https://t3.storage.dev' }}
           BUCKET: ${{ secrets.MONITOR_CDN_BUCKET }}
           RELEASE_TAG: ${{ inputs.version }}
         run: |
@@ -569,7 +569,7 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.MONITOR_CDN_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.MONITOR_CDN_SECRET_ACCESS_KEY }}
           AWS_REGION: auto
-          AWS_ENDPOINT_URL_S3: https://fly.storage.tigris.dev
+          AWS_ENDPOINT_URL_S3: ${{ vars.MONITOR_CDN_ENDPOINT || 'https://t3.storage.dev' }}
           BUCKET: ${{ secrets.MONITOR_CDN_BUCKET }}
         run: |
           set -euo pipefail

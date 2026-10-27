@@ -1,5 +1,5 @@
 //! Self-updates from the Monitor release channel (`latest.json` on
-//! downloads.sanka.com, then on this repository's latest GitHub release;
+//! release.sanka.com, then on this repository's latest GitHub release;
 //! signed with Monitor's own updater key). Checks after launch and hourly.
 //!
 //! A newer build is downloaded in the background and staged: the window, the

@@ -59,7 +59,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://downloads.sanka.com/monitor/latest.json",
+        "https://release.sanka.com/monitor/latest.json",
         "https://github.com/sankaHQ/monitor/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDc1ODRCQTE3QTczRTMwOTkKUldTWk1ENm5GN3FFZGZxalUxNk9xVXo5MlkzL1k3eVYwOEhJelZJQlAxWWtSZ0Erc2tDWUx1YngK"

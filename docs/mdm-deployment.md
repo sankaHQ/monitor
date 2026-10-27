@@ -26,7 +26,7 @@ computers already connected.
 | macOS | `https://sanka.com/monitor/download/mac-pkg` | Installs `/Applications/Sanka Monitor.app` (universal) and `/Library/LaunchAgents/com.sanka.monitor.agent.plist`, which opens the app in the menu bar at every login. The postinstall opens it at once for whoever is signed in. Signed with the Developer ID Installer certificate, notarized. |
 | Windows | `https://sanka.com/monitor/download/windows-msi` | Per-machine install. Authenticode-signed by Sanka, Inc. |
 
-Files with stable names for scripts: `https://downloads.sanka.com/monitor/latest/Sanka-Monitor.pkg`
+Files with stable names for scripts: `https://release.sanka.com/monitor/latest/Sanka-Monitor.pkg`
 and `.../latest/Sanka-Monitor-x64.msi`. Each release lists SHA-256s in `SHA256SUMS`
 (see [SECURITY.md](../SECURITY.md#verifying-a-download)).
 

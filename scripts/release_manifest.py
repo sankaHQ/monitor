@@ -8,7 +8,7 @@
 
 <builds> holds the build jobs' artifacts (one folder each). <out> gets:
 
-    release/   versioned files, the GitHub release and downloads.sanka.com/monitor/vX.Y.Z/
+    release/   versioned files, the GitHub release and release.sanka.com/monitor/vX.Y.Z/
     latest/    the same installers under stable names, for IT scripts
     latest.json  the updater feed (Tauri), URLs on the CDN
     stable.json  channels/stable.json, which sanka.com/monitor/download/<target> follows
@@ -26,7 +26,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-CDN_BASE = "https://downloads.sanka.com/monitor"
+CDN_BASE = "https://release.sanka.com/monitor"
 
 
 def sha256(path: Path) -> str:
