@@ -40,6 +40,8 @@ pub enum AgentEndpoint {
     /// Read-only: each time someone in the workspace opened this person's
     /// daily app presence, with the reason they gave. Sends nothing.
     PersonViews,
+    /// Read-only, no auth: who an invite link is from, before connecting.
+    Invites,
     /// The SaaS this PC used in the last 30 days, after its person turned
     /// on sharing; `sharing: false` deletes what it shared.
     Saas,
@@ -55,6 +57,7 @@ impl AgentEndpoint {
             AgentEndpoint::Revoke => "revoke",
             AgentEndpoint::Software => "software",
             AgentEndpoint::PersonViews => "person-views",
+            AgentEndpoint::Invites => "invites",
             AgentEndpoint::Saas => "saas",
         };
         format!("{AGENT_API_BASE_PATH}/{leaf}")
@@ -73,6 +76,8 @@ pub enum DesktopEndpoint {
     Revoke,
     /// One report, sent as the signed-in account.
     Reports,
+    /// Connects this computer to the workspace the person signed in to.
+    Enrollments,
 }
 
 impl DesktopEndpoint {
@@ -82,6 +87,7 @@ impl DesktopEndpoint {
             DesktopEndpoint::Token => "token",
             DesktopEndpoint::Revoke => "revoke",
             DesktopEndpoint::Reports => "reports",
+            DesktopEndpoint::Enrollments => "enrollments",
         };
         format!("{DESKTOP_API_BASE_PATH}/{leaf}")
     }
@@ -92,6 +98,13 @@ impl DesktopEndpoint {
 pub const DEVICE_REVOKED: &str = "MONITOR_DEVICE_REVOKED";
 /// `/agent/token` answers this when no device has this id and secret.
 pub const DEVICE_INVALID: &str = "MONITOR_DEVICE_INVALID";
+/// `/agent/token` answers this while an admin has not approved the device yet.
+pub const DEVICE_PENDING: &str = "MONITOR_DEVICE_PENDING";
+/// `/agent/enrollments` answers this for a code, token or invite that is
+/// unknown, expired, revoked, used up, or for another email domain.
+pub const ENROLLMENT_INVALID: &str = "MONITOR_ENROLLMENT_INVALID";
+/// `/agent/invites/{token}` answers this for an unknown or expired invite.
+pub const INVITE_INVALID: &str = "MONITOR_INVITE_INVALID";
 /// `/desktop/devices` answers this for an unknown, expired, used or
 /// mismatched sign-in code.
 pub const DESKTOP_INVALID_GRANT: &str = "MONITOR_DESKTOP_INVALID_GRANT";
@@ -125,6 +138,12 @@ impl SyncError {
     /// credential works again, so retrying is pointless.
     pub fn device_gone(&self) -> bool {
         matches!(self.code(), Some(DEVICE_REVOKED | DEVICE_INVALID))
+    }
+
+    /// An admin has not approved this device yet: keep the credential and
+    /// try again later.
+    pub fn device_pending(&self) -> bool {
+        self.code() == Some(DEVICE_PENDING)
     }
 
     /// The signed-in app's credential no longer works: sign in again.
@@ -171,10 +190,38 @@ impl From<reqwest::Error> for SyncError {
 
 pub type SyncResult<T> = Result<T, SyncError>;
 
-#[derive(Debug, Clone, Serialize)]
+/// One credential (`code`, `deployment_token` or `invite_token`) and what the
+/// workspace needs to tell this computer apart: a hash of its hardware id,
+/// never the id itself. `{"code": …}` alone is the 0.3 request.
+#[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EnrollRequest {
-    pub code: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deployment_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invite_token: Option<String>,
+    /// Device management's owner of the computer (an MDM variable); only
+    /// with a deployment token.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_email: Option<String>,
+    /// The credential came from managed preferences.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub managed: bool,
+    #[serde(flatten)]
+    pub machine: Option<MachineFields>,
+}
+
+/// What every new enrollment sends about the computer itself.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MachineFields {
+    /// sha256("sanka-monitor:" + IOPlatformUUID / MachineGuid), hex.
+    pub hardware_id_hash: String,
+    pub platform: String,
+    pub arch: String,
+    pub agent_version: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -183,6 +230,40 @@ pub struct EnrollmentData {
     pub device_id: String,
     pub device_secret: String,
     pub workspace_id: String,
+    /// The rest arrived with 0.4; an older API sends none of it.
+    #[serde(default)]
+    pub workspace_name: Option<String>,
+    /// `active`, or `pending_approval` until an admin approves the device.
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub managed: bool,
+    #[serde(default)]
+    pub owner_email: Option<String>,
+    #[serde(default = "default_true")]
+    pub allow_disconnect: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl EnrollmentData {
+    pub fn pending_approval(&self) -> bool {
+        self.status.as_deref() == Some("pending_approval")
+    }
+}
+
+/// Who an invite link is from, shown before the person connects.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InvitePreview {
+    pub workspace_name: String,
+    #[serde(default)]
+    pub invited_by: Option<String>,
+    #[serde(default)]
+    pub email: Option<String>,
+    pub expires_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -219,6 +300,10 @@ pub struct CheckinRequest {
     /// workspace delete what was shared.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub saas_sharing: Option<bool>,
+    /// `arm64` or `x86_64`: how many Intel Macs still check in decides when
+    /// the universal build retires.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arch: Option<String>,
     pub posture: Vec<PostureCheckResult>,
 }
 
@@ -534,15 +619,46 @@ impl AgentClient {
         &self.base_url
     }
 
-    pub async fn enroll(&self, code: &str) -> SyncResult<EnrollmentData> {
-        self.post_json(
-            AgentEndpoint::Enrollments,
-            &EnrollRequest {
-                code: code.to_string(),
-            },
-            None,
-        )
-        .await
+    pub async fn enroll(&self, request: &EnrollRequest) -> SyncResult<EnrollmentData> {
+        self.post_json(AgentEndpoint::Enrollments, request, None)
+            .await
+    }
+
+    /// Who an invite is from. No auth and nothing about this computer.
+    pub async fn invite_preview(&self, invite_token: &str) -> SyncResult<InvitePreview> {
+        let mut url = reqwest::Url::parse(&format!(
+            "{}{}/",
+            self.base_url,
+            AgentEndpoint::Invites.path()
+        ))
+        .map_err(|err| SyncError::Envelope(err.to_string()))?;
+        url.path_segments_mut()
+            .map_err(|_| SyncError::Envelope("bad base URL".to_string()))?
+            .pop_if_empty()
+            .push(invite_token);
+        let response = self.http.get(url).send().await?;
+        self.parse_envelope(response).await
+    }
+
+    /// Connects this computer to the workspace the signed-in account chose,
+    /// with the account's runtime token; the account is its owner.
+    pub async fn desktop_enroll(
+        &self,
+        runtime_token: &str,
+        machine: &MachineFields,
+    ) -> SyncResult<EnrollmentData> {
+        let response = self
+            .http
+            .post(format!(
+                "{}{}",
+                self.base_url,
+                DesktopEndpoint::Enrollments.path()
+            ))
+            .bearer_auth(runtime_token)
+            .json(machine)
+            .send()
+            .await?;
+        self.parse_envelope(response).await
     }
 
     pub async fn issue_token(&self, device_id: &str, device_secret: &str) -> SyncResult<TokenData> {
@@ -874,6 +990,7 @@ mod tests {
             os_edition: None,
             sharing_consent: "opted_out".into(),
             saas_sharing: None,
+            arch: None,
             posture: vec![PostureCheckResult {
                 id: PostureCheckId::Gatekeeper,
                 pass: Some(true),

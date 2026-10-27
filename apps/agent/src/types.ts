@@ -59,7 +59,47 @@ export type Status = {
   updateChecks: boolean;
   lastUpdateCheckAt: string | null;
   updateCheckError: string | null;
+  workspaceName: string | null;
+  /** Device management connected this computer. */
+  managed: boolean;
+  /** Disconnect is offered (false when device management doesn't allow it). */
+  canDisconnect: boolean;
+  ownerEmail: string | null;
+  enrollmentMethod: EnrollmentMethod | null;
+  /** Connected, waiting for an admin to approve the device. */
+  pendingApproval: boolean;
+  /** A newer version is downloaded and installs on restart. */
+  updateReady: UpdateInfo | null;
+  /** This launch is the first after an update. */
+  justUpdated: UpdateInfo | null;
+  /** No version of the app ran here before: open on the welcome screen. */
+  firstRun: boolean;
 };
+
+export type EnrollmentMethod = "code" | "invite" | "deployment_token" | "sign_in";
+
+export type UpdateInfo = { version: string; notes: string | null };
+
+/** Who an invite link is from (`preview_invite`). */
+export type InvitePreview = {
+  workspaceName: string;
+  invitedBy: string | null;
+  email: string | null;
+  expiresAt: string;
+};
+
+export type CheckId =
+  | "disk_encryption"
+  | "firewall"
+  | "gatekeeper"
+  | "screen_lock"
+  | "os_update"
+  | "automatic_updates"
+  | "antivirus"
+  | "local_admin"
+  | "device_management"
+  | "secure_boot"
+  | "system_integrity";
 
 export type SentPayload = {
   sentAt: string;
@@ -113,6 +153,8 @@ export type ScanView = {
     programsPastSupport: number;
   };
   findings: {
+    /** The failed check behind a device finding. */
+    check: CheckId | null;
     severity: Severity;
     severityLabel: string;
     areaLabel: string;
@@ -120,12 +162,7 @@ export type ScanView = {
     evidence: string;
     fix: string;
   }[];
-  checks: {
-    label: string;
-    pass: boolean | null;
-    resultLabel: string;
-    detail: string | null;
-  }[];
+  checks: ScanCheck[];
   software: {
     name: string;
     version: string | null;
@@ -144,6 +181,21 @@ export type ScanView = {
     allowlistSummary: string;
     catalogVerifiedOn: string | null;
   };
+};
+
+export type ScanCheck = {
+  id: CheckId;
+  /** The short name the sidebar shows. */
+  name: string;
+  label: string;
+  why: string;
+  pass: boolean | null;
+  resultLabel: string;
+  detail: string | null;
+  /** For a failed check: its finding's severity and fix. */
+  severity: Severity | null;
+  severityLabel: string | null;
+  fix: string | null;
 };
 
 /** A SaaS this computer uses. It carries no web addresses. */

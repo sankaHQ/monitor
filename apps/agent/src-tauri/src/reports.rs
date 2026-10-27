@@ -16,10 +16,11 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, NaiveDate, Utc};
 use monitor_findings::{LifecycleStatus, Severity};
+use monitor_posture::PostureCheckId;
 use monitor_report::copy;
 use monitor_report::{DeviceRecord, Lang, ReportCounts, ScanReport};
 use serde::Serialize;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt as _;
 use tauri_plugin_opener::OpenerExt as _;
 
@@ -32,6 +33,8 @@ use sha2::{Digest, Sha256};
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FindingView {
+    /// The failed check behind a device finding, so the app can link to it.
+    pub check: Option<PostureCheckId>,
     pub severity: Severity,
     pub severity_label: &'static str,
     pub area_label: &'static str,
@@ -43,10 +46,18 @@ pub struct FindingView {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CheckView {
+    pub id: PostureCheckId,
+    /// The short name the sidebar shows; `label` is the full one.
+    pub name: &'static str,
     pub label: &'static str,
+    pub why: &'static str,
     pub pass: Option<bool>,
     pub result_label: &'static str,
     pub detail: Option<String>,
+    /// For a failed check: its finding's severity and fix.
+    pub severity: Option<Severity>,
+    pub severity_label: Option<&'static str>,
+    pub fix: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -138,6 +149,7 @@ pub fn scan_view(report: &ScanReport, lang: Lang) -> ScanView {
             .findings
             .iter()
             .map(|finding| FindingView {
+                check: finding.check,
                 severity: finding.severity,
                 severity_label: copy::severity(finding.severity, lang),
                 area_label: copy::area(finding.area, lang),
@@ -149,14 +161,23 @@ pub fn scan_view(report: &ScanReport, lang: Lang) -> ScanView {
         checks: report
             .checks
             .iter()
-            .map(|check| CheckView {
-                label: copy::check_label(check.id, platform, lang),
-                pass: check.pass,
-                result_label: copy::check_result(check.pass, lang),
-                detail: check
-                    .detail
-                    .as_deref()
-                    .map(|detail| copy::check_detail(detail, lang)),
+            .map(|check| {
+                let finding = report.findings.iter().find(|f| f.check == Some(check.id));
+                CheckView {
+                    id: check.id,
+                    name: copy::check_name(check.id, platform, lang),
+                    label: copy::check_label(check.id, platform, lang),
+                    why: copy::check_why(check.id, platform, lang),
+                    pass: check.pass,
+                    result_label: copy::check_result(check.pass, lang),
+                    detail: check
+                        .detail
+                        .as_deref()
+                        .map(|detail| copy::check_detail(detail, lang)),
+                    severity: finding.map(|f| f.severity),
+                    severity_label: finding.map(|f| copy::severity(f.severity, lang)),
+                    fix: finding.map(|f| copy::fix(f, platform, lang)),
+                }
             })
             .collect(),
         software: report
@@ -230,7 +251,24 @@ pub async fn scan_device(app: AppHandle, lang: Lang) -> Result<ScanView, String>
     let view = scan_view(&report, lang);
     *state.last_scan.lock().await = Some(report);
     crate::agent::spawn_saas_sync(&app);
+    crate::tray::refresh(&app).await;
     Ok(view)
+}
+
+/// Scans from the tray: keeps the result for the window, which reloads it on
+/// the scan event, in the person's language there.
+pub async fn scan_in_background(app: &AppHandle) -> Result<(), String> {
+    let state: State<'_, AgentState> = app.state();
+    {
+        let _one_scan = state.scan_lock.lock().await;
+        let report = crate::checks::scan_now(app).await?;
+        crate::checks::record_scan(app, &report).await;
+        *state.last_scan.lock().await = Some(report);
+    }
+    crate::agent::spawn_saas_sync(app);
+    let _ = app.emit(crate::saas::SCAN_EVENT, ());
+    crate::tray::refresh(app).await;
+    Ok(())
 }
 
 /// The latest scan of this session in `lang`, if there is one.

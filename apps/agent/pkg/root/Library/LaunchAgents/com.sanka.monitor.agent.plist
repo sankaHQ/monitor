@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Installed by the .pkg for device management only: opens Sanka Monitor in the
+     menu bar at every person's login, so a managed Mac checks in for whoever uses
+     it. The single-instance plugin folds this into a launch the app already made. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.sanka.monitor.agent</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/open</string>
+    <string>-g</string>
+    <string>-a</string>
+    <string>/Applications/Sanka Monitor.app</string>
+    <string>--args</string>
+    <string>--background</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>LimitLoadToSessionType</key>
+  <string>Aqua</string>
+</dict>
+</plist>

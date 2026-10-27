@@ -10,8 +10,9 @@ local-first:
   workbook in the IT資産台帳 (IT asset ledger) layout, a CSV and a one-page IT risk
   report (HTML, prints to one A4 page), in Japanese or English, where the person
   chooses. Nothing is uploaded. The only automatic network request is the hourly
-  update check, which downloads `latest.json` from the release feed, sends nothing
-  about the computer, and can be turned off under Privacy.
+  update check, which downloads `latest.json` from downloads.sanka.com (or this
+  repository's latest release), sends nothing about the computer, and can be turned
+  off under Privacy.
 - **Send to Sanka, on the person's word.** Sending signs in once with a Sanka
   account in the system browser (`<app base>/desktop/monitor/connect`, PKCE per
   RFC 8252, with the code handed back through `sanka-monitor://auth/callback` or
@@ -49,9 +50,15 @@ local-first:
 - **Fleet scan.** `sanka-monitor-agent scan --out <folder>` writes one CSV per PC
   for device management tools, and the workbooks in `templates/fleet/` merge a
   folder of them with Power Query. See [docs/fleet-scan.md](docs/fleet-scan.md).
-- **Connected mode, opt-in.** Enrolling with a workspace's code connects the
-  device to monitor.sanka.com: check-ins send the security checks and installed
-  software for continuous visibility.
+- **Connected mode, opt-in.** Connecting to a workspace on monitor.sanka.com sends
+  the security checks and installed software with each check-in, for continuous
+  visibility. A computer connects with an invite link (`sanka-monitor://enroll?invite=…`,
+  which shows who it's from first), by signing in with the company account, with a
+  one-time code, or silently through device management: a deployment token in managed
+  preferences ([docs/mdm-deployment.md](docs/mdm-deployment.md)). Each enrollment sends
+  a salted SHA-256 of the hardware id so the workspace replaces the computer's earlier
+  device; the id itself never leaves the computer. Device management can connect a
+  computer, but never turns on app-usage sharing.
 - **Usage, connected and opted in only.** App usage is recorded only while the
   device is connected *and* the person has turned sharing on (default off); the
   console shows it as daily app presence, never durations.
@@ -147,52 +154,82 @@ clean; CI enforces both.
 
 ## Release
 
-The agent publishes to the public [sankaHQ/monitor-releases](https://github.com/sankaHQ/monitor-releases)
-repository. Signing and notarization secrets are Actions secrets only — never committed.
+Releases are published from this repository, so the source and the binaries come
+from the same place. Signing and notarization secrets are Actions secrets only,
+never committed.
 
 `Release (macOS + Windows)` (`.github/workflows/release.yml`, manual dispatch) builds
-and signs both platforms and publishes them together as release `vX.Y.Z`, the
-repository's latest release:
+and signs everything and publishes it as release `vX.Y.Z`, this repository's latest
+release, and on `https://downloads.sanka.com/monitor/`:
 
-- **macOS:** one universal app for Apple silicon and Intel Macs, signed with the
-  Developer ID, notarized and stapled.
-- **Windows:** the per-user NSIS installer (x64), Authenticode-signed through Microsoft
-  Artifact Signing with the publisher Sanka, Inc. The job checks the signatures of the
-  installer and of the app inside it. See [docs/windows.md](docs/windows.md#release).
-- **Updates:** both are signed with Monitor's updater key (the public key is in
-  `tauri.conf.json`). `latest.json` lists `darwin-aarch64` and `darwin-x86_64` (both the
-  universal app) and `windows-x86_64` (the installer).
+- **macOS, Apple silicon (arm64):** the default download, signed with the Developer ID,
+  notarized and stapled.
+- **macOS, universal:** the same app for Apple silicon and Intel Macs, for Intel Macs
+  and for the `.pkg`.
+- **macOS `.pkg`** for device management: the universal app in `/Applications` plus a
+  login agent for every person (`apps/agent/pkg/`), signed with the Developer ID
+  Installer certificate, notarized and stapled. See [docs/mdm-deployment.md](docs/mdm-deployment.md).
+- **DMGs** are signed, notarized and stapled themselves (Tauri notarizes only the app
+  inside), with the Lens layout from `apps/agent/src-tauri/dmg/background.png`.
+- **Windows:** the per-user NSIS installer (x64), the download and the update package,
+  and a per-machine MSI for device management. Both are Authenticode-signed through
+  Microsoft Artifact Signing with the publisher Sanka, Inc. See
+  [docs/windows.md](docs/windows.md#release).
+- **Every file** is listed with its SHA-256 in `SHA256SUMS` and has a GitHub
+  build-provenance attestation (see [SECURITY.md](SECURITY.md#verifying-a-download)).
+- **Updates** are signed with Monitor's updater key (the public key is in
+  `tauri.conf.json`). `latest.json` points `darwin-aarch64` at the arm64 app,
+  `darwin-x86_64` at the universal app and `windows-x86_64` at the installer. The app
+  reads it from the CDN first and from this repository's latest release second, stages
+  a newer build in the background and installs it when the app restarts or quits, or
+  after its window has been closed for 30 minutes (`apps/agent/src-tauri/src/updates.rs`).
 
-Monitor's updater reads `releases/latest/download/latest.json` and installs it in the
-background, so the workflow refuses a tag other than `v` + the version in
-`apps/agent/src-tauri/Cargo.toml` (the agent's only version source). It also checks
-that every secret below exists before either build starts.
+The CDN layout and `channels/stable.json`, which `sanka.com/monitor/download/<target>`
+follows, are the shared contract in the umbrella repo
+(`tracking/monitor-0.4-redesign/contract.md`); `scripts/release_manifest.py` writes
+them. `channels/stable.json` is uploaded last, after the files and the GitHub
+release, and the run then downloads every file back from the CDN and compares its
+SHA-256.
+
+The workflow refuses a tag other than `v` + the version in
+`apps/agent/src-tauri/Cargo.toml` (the agent's only version source), and checks that
+every secret below exists before any build starts. Publishing runs in the `release`
+environment, whose reviewers approve the run; turn on immutable releases and a tag
+ruleset for `v*` in the repository settings.
 
 | Actions secret | Used for |
 | --- | --- |
-| `MACOS_APPLE_CERTIFICATE`, `MACOS_APPLE_CERTIFICATE_PASSWORD`, `MACOS_APPLE_SIGNING_IDENTITY` | Developer ID signing |
+| `MACOS_APPLE_CERTIFICATE`, `MACOS_APPLE_CERTIFICATE_PASSWORD`, `MACOS_APPLE_SIGNING_IDENTITY` | Developer ID Application signing |
+| `MACOS_INSTALLER_CERTIFICATE`, `MACOS_INSTALLER_CERTIFICATE_PASSWORD`, `MACOS_INSTALLER_SIGNING_IDENTITY` | Developer ID Installer signing (the `.pkg`) |
 | `MACOS_APPLE_ID`, `MACOS_APPLE_APP_SPECIFIC_PASSWORD`, `MACOS_APPLE_TEAM_ID` | Notarization |
 | `TAURI_UPDATER_PRIVATE_KEY`, `TAURI_UPDATER_PRIVATE_KEY_PASSWORD` | Updater signatures (`.sig`) |
 | `MONITOR_AZURE_TENANT_ID`, `MONITOR_AZURE_CLIENT_ID`, `MONITOR_AZURE_CLIENT_SECRET` | Windows: the signing credential |
 | `MONITOR_AZURE_SIGNING_ENDPOINT`, `MONITOR_AZURE_SIGNING_ACCOUNT`, `MONITOR_AZURE_SIGNING_PROFILE` | Windows: the Artifact Signing account and certificate profile |
-| `MONITOR_RELEASES_TOKEN` (optional) | Publishing; without it, publish a dry run by hand |
+| `MONITOR_CDN_ACCESS_KEY_ID`, `MONITOR_CDN_SECRET_ACCESS_KEY`, `MONITOR_CDN_BUCKET` | Publishing: the Tigris bucket behind downloads.sanka.com |
+| `MONITOR_RELEASES_TOKEN` | Only for `bridge_to_monitor_releases` (see below) |
 
-A dry run builds and signs everything and uploads the release files to the workflow run
-as the artifact `sanka-monitor-vX.Y.Z`: `sanka-monitor_X.Y.Z_universal.dmg`,
-`sanka-monitor_X.Y.Z_universal.app.tar.gz` and its `.sig`,
-`sanka-monitor_X.Y.Z_x64-setup.exe` and its `.sig`, and `latest.json`. To publish it by
-hand:
+A dry run (the default) builds, signs and notarizes everything and uploads the release
+files to the workflow run as the artifact `sanka-monitor-vX.Y.Z`. Publishing is the
+same run with `dry_run=false`:
 
 ```bash
 gh workflow run release.yml --repo sankaHQ/monitor -f version=vX.Y.Z -f dry_run=true -f release_notes="<notes>"
-gh run download <run-id> --repo sankaHQ/monitor -n sanka-monitor-vX.Y.Z -D out
-gh release create vX.Y.Z --repo sankaHQ/monitor-releases --title "Sanka Monitor vX.Y.Z" \
-  --notes "<notes>" --latest out/*
+gh workflow run release.yml --repo sankaHQ/monitor -f version=vX.Y.Z -f dry_run=false -f release_notes="<notes>"
 ```
 
-Use the same notes in both commands: the workflow writes them into `latest.json`.
+**Moving from sankaHQ/monitor-releases (0.4.0).** Agents up to 0.3.x read
+`latest.json` from `sankaHQ/monitor-releases`. Release 0.4.0 with
+`bridge_to_monitor_releases=true` (needs `MONITOR_RELEASES_TOKEN`) to publish it there
+one last time; those agents update to 0.4.0, which reads the new feed. Archive
+`monitor-releases` once its last `latest.json` download count levels off and connected
+devices report 0.4.0 or later. Archived repositories keep serving release files, so
+old links and installs that haven't run since keep working.
 
-To propose changes, see [CONTRIBUTING.md](CONTRIBUTING.md).
+**Retiring the universal build.** Track Intel Macs through the `arch` that check-ins
+now report and through the download page. When they stay below 3% for 60 days, warn
+in the app on Intel Macs 90 days ahead, then pin `darwin-x86_64` in `latest.json` to
+the last universal build, keep that DMG downloadable and remove the universal matrix
+leg (the `.pkg` moves to the arm64 leg).
 
 ## License, security and contributing
 
