@@ -6,8 +6,10 @@
 //!
 //! Privacy invariants enforced here:
 //! - the device secret lives only in the OS keychain, never in the config file;
-//! - every outbound body is recorded verbatim for the Transparency pane before
-//!   it is sent — the employee sees exactly what the workspace sees;
+//! - every body sent to the workspace is recorded verbatim for the
+//!   Transparency pane before it is sent — the employee sees exactly what the
+//!   workspace sees — except the token request before each call, which
+//!   carries only the device's id and secret;
 //! - `sharing_consent` defaults to opted-out and is reported on every check-in,
 //!   and only usage that started after the latest opt-in can be uploaded;
 //! - usage is collected only while the device is enrolled and the person has

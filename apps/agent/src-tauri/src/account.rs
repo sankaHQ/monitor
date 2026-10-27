@@ -14,6 +14,10 @@
 //! platform: no computer name and nothing from the scan. The credential only
 //! sends reports; it is not the connected mode's enrollment. Sign out revokes
 //! it on the server when it can, and always forgets it here.
+//!
+//! Every request the account makes is listed in the Privacy pane before it
+//! goes out: the sign-in, each token request, each report and the revoke,
+//! with the code, the verifier and the device secret left out.
 
 use std::time::{Duration, Instant};
 
@@ -22,8 +26,8 @@ use base64::Engine as _;
 use monitor_core::DEEP_LINK_SCHEME;
 use monitor_report::Lang;
 use monitor_sync::{
-    AgentClient, DesktopEndpoint, DesktopSignInData, DesktopSignInRequest, DesktopTokenRequest,
-    SyncError, DESKTOP_INVALID_GRANT,
+    AgentClient, DesktopEndpoint, DesktopSignInData, DesktopSignInRequest, DesktopTokenData,
+    DesktopTokenRequest, SyncError, DESKTOP_INVALID_GRANT,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -310,11 +314,11 @@ async fn complete(app: &AppHandle, code: &str, returned_state: Option<&str>) -> 
     // the code was on its way: only the attempt still waiting saves an account.
     let still_waiting = take_if_waiting(&mut *state.pending_sign_in.lock().await, &attempt);
     if !still_waiting {
-        discard(&client, &signed_in).await;
+        discard(&state, &client, &signed_in).await;
         return Ok(());
     }
     if let Err(err) = save_account(app, &signed_in).await {
-        discard(&client, &signed_in).await;
+        discard(&state, &client, &signed_in).await;
         return Err(err);
     }
     Ok(())
@@ -372,18 +376,59 @@ async fn save_account(app: &AppHandle, signed_in: &DesktopSignInData) -> Result<
 /// Signs out, in Sanka, a credential this app will not keep (a cancelled or
 /// replaced sign-in), so none is left live. Best effort, and never longer
 /// than Sign out waits.
-async fn discard(client: &AgentClient, signed_in: &DesktopSignInData) {
+async fn discard(state: &AgentState, client: &AgentClient, signed_in: &DesktopSignInData) {
     let revoke = async {
-        let token = client
-            .desktop_token(&DesktopTokenRequest {
-                device_id: signed_in.device_id.clone(),
-                device_secret: signed_in.device_secret.clone(),
-                app_version: AGENT_VERSION.to_string(),
-            })
-            .await?;
-        client.desktop_revoke(&token.access_token).await
+        let request = DesktopTokenRequest {
+            device_id: signed_in.device_id.clone(),
+            device_secret: signed_in.device_secret.clone(),
+            app_version: AGENT_VERSION.to_string(),
+        };
+        let token = request_token(state, client, &request).await?;
+        request_revoke(state, client, &token.access_token).await
     };
     let _ = tokio::time::timeout(SIGN_OUT_TIMEOUT, revoke).await;
+}
+
+/// The token request as the Privacy pane lists it: every field the app
+/// sends, with the device secret left out.
+fn listed_token_request(request: &DesktopTokenRequest) -> serde_json::Value {
+    serde_json::json!({
+        "deviceId": request.device_id,
+        "deviceSecret": "(this app's device secret)",
+        "appVersion": request.app_version,
+    })
+}
+
+/// Asks Sanka for a one-hour token, listed in the Privacy pane first.
+async fn request_token(
+    state: &AgentState,
+    client: &AgentClient,
+    request: &DesktopTokenRequest,
+) -> Result<DesktopTokenData, SyncError> {
+    let request_id = state
+        .record_payload(
+            &DesktopEndpoint::Token.path(),
+            listed_token_request(request),
+        )
+        .await;
+    let data = client.desktop_token(request).await?;
+    state.mark_payload_delivered(request_id).await;
+    Ok(data)
+}
+
+/// Signs a credential out in Sanka, listed in the Privacy pane first. The
+/// request has no body; its token goes in the header, as for a report.
+async fn request_revoke(
+    state: &AgentState,
+    client: &AgentClient,
+    token: &str,
+) -> Result<(), SyncError> {
+    let request_id = state
+        .record_payload(&DesktopEndpoint::Revoke.path(), serde_json::json!({}))
+        .await;
+    client.desktop_revoke(token).await?;
+    state.mark_payload_delivered(request_id).await;
+    Ok(())
 }
 
 /// A link to `sanka-monitor://…` opened the app, or reached the running one.
@@ -428,9 +473,12 @@ pub async fn access_token(app: &AppHandle) -> Result<String, TokenError> {
         device_secret: secret,
         app_version: AGENT_VERSION.to_string(),
     };
-    let data = tokio::time::timeout(TOKEN_REQUEST_TIMEOUT, client.desktop_token(&request))
-        .await
-        .map_err(|_| TokenError::TimedOut)??;
+    let data = tokio::time::timeout(
+        TOKEN_REQUEST_TIMEOUT,
+        request_token(&state, &client, &request),
+    )
+    .await
+    .map_err(|_| TokenError::TimedOut)??;
     let token = data.access_token.clone();
     *cached = Some((
         data.access_token,
@@ -482,10 +530,10 @@ pub async fn sign_out(app: AppHandle) -> Result<AccountView, String> {
 /// Revokes this app's credential in Sanka: its token, then the revoke call.
 async fn revoke(app: &AppHandle) -> Result<(), TokenError> {
     let token = access_token(app).await?;
-    let api_base = app.state::<AgentState>().config.lock().await.api_base();
-    AgentClient::new(api_base, AGENT_VERSION)?
-        .desktop_revoke(&token)
-        .await?;
+    let state: State<'_, AgentState> = app.state();
+    let api_base = state.config.lock().await.api_base();
+    let client = AgentClient::new(api_base, AGENT_VERSION)?;
+    request_revoke(&state, &client, &token).await?;
     Ok(())
 }
 
@@ -593,5 +641,122 @@ mod tests {
                 .next(),
             Some("https://monitor.sanka.com/desktop/monitor/connect")
         );
+    }
+
+    /// Token requests and the revoke are listed in the Privacy pane before
+    /// they go out, with the device secret left out, and show as delivered
+    /// only once Sanka answers.
+    #[test]
+    fn token_requests_and_sign_out_are_listed_without_the_secret() {
+        use std::io::{Read, Write};
+
+        // Answers the token request, then the revoke, and hands both back.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            [
+                r#"{"success":true,"data":{"accessToken":"runtime-token","expiresIn":3600},"error":null}"#,
+                r#"{"success":true,"data":{"revokedAt":"2026-10-27T01:00:00Z"},"error":null}"#,
+            ]
+            .map(|answer| {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = Vec::new();
+                let mut buf = [0u8; 4096];
+                let head_end = loop {
+                    let n = stream.read(&mut buf).unwrap();
+                    request.extend_from_slice(&buf[..n]);
+                    if let Some(at) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                        break at + 4;
+                    }
+                };
+                let head = String::from_utf8_lossy(&request[..head_end]).to_ascii_lowercase();
+                let length: usize = head
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length: "))
+                    .map_or(0, |value| value.trim().parse().unwrap());
+                while request.len() < head_end + length {
+                    let n = stream.read(&mut buf).unwrap();
+                    request.extend_from_slice(&buf[..n]);
+                }
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{answer}",
+                    answer.len()
+                )
+                .unwrap();
+                String::from_utf8(request).unwrap()
+            })
+        });
+
+        let state = AgentState::default();
+        let request = DesktopTokenRequest {
+            device_id: "device-1".into(),
+            device_secret: "device-secret-1".into(),
+            app_version: "0.3.5".into(),
+        };
+        tauri::async_runtime::block_on(async {
+            let client = AgentClient::new(base, "0.3.5").unwrap();
+            let token = request_token(&state, &client, &request).await.unwrap();
+            request_revoke(&state, &client, &token.access_token)
+                .await
+                .unwrap();
+        });
+        // On the wire, the token request carries the secret and the revoke
+        // the token.
+        let [token_request, revoke_request] = server.join().unwrap();
+        assert!(token_request.starts_with("POST /api/v2/monitor/desktop/token "));
+        assert!(token_request.contains("device-secret-1"));
+        assert!(revoke_request.starts_with("POST /api/v2/monitor/desktop/revoke "));
+        assert!(revoke_request
+            .to_ascii_lowercase()
+            .contains("authorization: bearer runtime-token"));
+
+        // In the Privacy pane, newest first: the revoke, then the token
+        // request with every field the app sends and the secret left out.
+        let sent =
+            tauri::async_runtime::block_on(async { state.sent_payloads.lock().await.clone() });
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[0].endpoint, "/api/v2/monitor/desktop/revoke");
+        assert_eq!(sent[0].body, serde_json::json!({}));
+        assert_eq!(sent[1].endpoint, "/api/v2/monitor/desktop/token");
+        assert_eq!(
+            sent[1].body,
+            serde_json::json!({
+                "deviceId": "device-1",
+                "deviceSecret": "(this app's device secret)",
+                "appVersion": "0.3.5",
+            })
+        );
+        let keys = |value: &serde_json::Value| {
+            value
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            keys(&sent[1].body),
+            keys(&serde_json::to_value(&request).unwrap())
+        );
+        assert!(sent.iter().all(|payload| payload.delivered));
+
+        // Sanka never answered: listed all the same, delivery unconfirmed.
+        let closed = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let failed = tauri::async_runtime::block_on(async {
+            let client = AgentClient::new(format!("http://{closed}"), "0.3.5").unwrap();
+            request_token(&state, &client, &request).await
+        });
+        assert!(failed.is_err());
+        let sent =
+            tauri::async_runtime::block_on(async { state.sent_payloads.lock().await.clone() });
+        assert_eq!(sent[0].endpoint, "/api/v2/monitor/desktop/token");
+        assert!(!sent[0].delivered);
+        assert!(!serde_json::to_string(&sent)
+            .unwrap()
+            .contains("device-secret-1"));
     }
 }
