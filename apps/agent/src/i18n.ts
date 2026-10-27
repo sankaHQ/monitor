@@ -265,10 +265,10 @@ export const STRINGS: Record<Lang, Strings> = {
     send: {
       title: "Send to Sanka",
       intro:
-        "Your Sanka contact reviews the risks with you. Sanka Monitor builds the Excel report from this scan and shows what will be sent; nothing leaves this computer until you press Send.",
+        "Sanka reviews the risks with you. Sanka Monitor builds the Excel report from this scan and shows what will be sent; nothing leaves this computer until you press Send to Sanka.",
       signInTitle: "Sign in to send",
       signInIntro:
-        "Sending uses your Sanka account, so the report reaches your Sanka contact with your name and company. Signing in opens your browser: use Google, Microsoft or email, or create a free account. Scanning never needs an account.",
+        "Sending uses your Sanka account, so Sanka receives the report with your name, email address and company. Signing in opens your browser: use Google, Microsoft or email, or create a free account. Scanning never needs an account.",
       signIn: "Sign in with your browser",
       waiting:
         "Finish signing in in your browser. If Sanka Monitor does not come back by itself, paste the sign-in code here.",
@@ -362,7 +362,7 @@ export const STRINGS: Record<Lang, Strings> = {
     privacy: {
       leavesTitle: "What leaves this computer",
       leavesConnected:
-        "This computer is connected to a workspace: check-ins send its security checks and installed programs, and app usage and the SaaS it used only if you turned that sharing on. Check-ins, uploads, the sign-in and sent reports are listed below, exactly as sent.",
+        "This computer is connected to a workspace: check-ins send its security checks and installed programs, and app usage and the SaaS it used only if you turned that sharing on. Check-ins and uploads are listed below, exactly as sent, and so are your Sanka account's sign-in, token requests, sent reports and sign-out, with credentials hidden. The token request that comes first each time the app contacts your workspace is not listed.",
       leavesLocal:
         "Nothing, unless you send a report to Sanka yourself. Scans and reports stay on this computer. You sign in to send in your browser; the app itself then sends Sanka only a one-time sign-in code, its version and whether this is a Mac or a Windows PC. The only automatic network request is the update check below, which downloads the latest version number and sends nothing about this computer.",
       updateChecks:
@@ -513,10 +513,10 @@ export const STRINGS: Record<Lang, Strings> = {
     send: {
       title: "Sankaに送信",
       intro:
-        "Sankaの担当者がリスクを一緒に確認します。Sanka MonitorがこのスキャンからExcelのレポートを作成し、送信する内容を表示します。［送信］を押すまで、このPCからは何も送信しません。",
+        "Sankaがリスクを一緒に確認します。Sanka MonitorがこのスキャンからExcelのレポートを作成し、送信する内容を表示します。［Sankaに送信］を押すまで、このPCからは何も送信しません。",
       signInTitle: "サインインして送信",
       signInIntro:
-        "送信にはSankaのアカウントを使います。レポートは、あなたの名前と会社名でSankaの担当者に届きます。サインインはブラウザーで行います。Google、Microsoft、メールアドレスのいずれかでサインインするか、無料のアカウントを作成してください。スキャンにアカウントは不要です。",
+        "送信にはSankaのアカウントを使います。Sankaは、あなたの名前、メールアドレス、会社名とあわせてレポートを受け取ります。サインインはブラウザーで行います。Google、Microsoft、メールアドレスのいずれかでサインインするか、無料のアカウントを作成してください。スキャンにアカウントは不要です。",
       signIn: "ブラウザーでサインイン",
       waiting:
         "ブラウザーでサインインを完了してください。Sanka Monitorに自動で戻らない場合は、サインインコードをここに貼り付けてください。",
@@ -611,7 +611,7 @@ export const STRINGS: Record<Lang, Strings> = {
     privacy: {
       leavesTitle: "このPCの外に出る情報",
       leavesConnected:
-        "このPCはワークスペースに接続しています。チェックインでセキュリティチェックとインストール済みのソフトウェアを送信し、アプリの利用データと使ったSaaSは、それぞれ共有をオンにした場合だけ送信します。チェックイン、アップロード、サインイン、送信したレポートは、下に送信したとおり表示します。",
+        "このPCはワークスペースに接続しています。チェックインでセキュリティチェックとインストール済みのソフトウェアを送信し、アプリの利用データと使ったSaaSは、それぞれ共有をオンにした場合だけ送信します。チェックインとアップロードに加え、Sankaのアカウントで行うサインイン、トークンの要求、レポートの送信、サインアウトも、下に送信したとおり表示します（認証情報は伏せて表示します）。ワークスペースと通信するたびに最初に行うトークンの要求は表示しません。",
       leavesLocal:
         "Sankaにレポートを送信しない限り、ありません。スキャン結果とレポートはこのPCに残ります。送信のためのサインインはブラウザーで行い、アプリがSankaに送るのは、ワンタイムのサインインコード、アプリのバージョン、MacかWindowsかの区別だけです。自動で行う通信は下のアップデートの確認だけで、最新のバージョン番号を取得し、このPCの情報は送信しません。",
       updateChecks:

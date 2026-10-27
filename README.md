@@ -23,8 +23,10 @@ local-first:
   `sanka-monitor-report_<date-time>.xlsx`, never under the computer's name) and
   sends those bytes and counts, the app version and, for a scan, its report ID to
   `POST /api/v2/monitor/desktop/reports` with a one-hour token. Sanka's receipt
-  carries its own SHA-256 to compare. The sign-in and each sent report appear in
-  the Privacy pane (the one-hour token requests and sign-out do not). Without an account, the person emails the saved Excel instead.
+  carries its own SHA-256 to compare. The sign-in, each one-hour token request,
+  each sent report and sign-out appear in the Privacy pane, with the code, the
+  verifier and the device secret hidden. Without an account, the person emails the
+  saved Excel instead.
 - **The SaaS the computer uses.** Each scan maps installed desktop apps (Slack,
   Zoom, ChatGPT, …) to their SaaS in the catalog bundled in the app
   (`crates/monitor-saas/catalog/saas.json`: product, vendor, category, AI flag, web

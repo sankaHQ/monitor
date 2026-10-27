@@ -55,10 +55,11 @@ privacy permission.
   never signs the app out. The app sends exactly the file it showed, and compares
   Sanka's SHA-256 receipt with its own.
 - **Connected mode (opt-in enrollment).** The device secret lives only in the OS
-  keychain or credential store. It is exchanged for short-lived runtime tokens, and
-  every request body is shown in the app's Privacy pane before it is sent. App usage
-  is recorded only after the person opts in, and the event types have no fields for
-  window titles, URLs, document contents, keystrokes or screen captures.
+  keychain or credential store. It is exchanged for a short-lived runtime token
+  before each request; apart from that exchange, every request body is shown in
+  the app's Privacy pane before it is sent. App usage is recorded only after the
+  person opts in, and the event types have no fields for window titles, URLs,
+  document contents, keystrokes or screen captures.
 
 The Sanka API (`api-v2.sanka.com`) and the Monitor console are maintained
 separately and are not in this repository. Report suspected vulnerabilities in them
