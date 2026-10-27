@@ -1,8 +1,107 @@
+<div align="center">
+
+<img src="docs/assets/sanka-monitor-logo.png" alt="Sanka Monitor" width="120" height="120">
+
 # Sanka Monitor
 
-Sanka Monitor finds IT risks on a PC: security settings that are off, and an
-operating system or programs past (or near) the end of vendor support. It is
-local-first:
+The free, open source app that finds the IT risks on a computer: security settings
+that are off, an OS or programs past the end of vendor support, and the SaaS and AI
+tools in use. It scans locally, needs no account, and nothing leaves the computer
+unless you send a report or your company connects it. For macOS and Windows, with
+an optional console for IT at [monitor.sanka.com](https://monitor.sanka.com).
+
+[![Release](https://img.shields.io/github/v/release/sankaHQ/monitor?label=release)](https://github.com/sankaHQ/monitor/releases/latest)
+[![Platforms](https://img.shields.io/badge/platforms-macOS%2013%2B%20%7C%20Windows%2010%2F11-472cf5)](https://sanka.com/monitor/download/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![Download](https://img.shields.io/badge/download-sanka.com%2Fmonitor-472cf5)](https://sanka.com/monitor/download/)
+
+**[Download for Mac](https://sanka.com/monitor/download/mac)** ·
+**[Download for Windows](https://sanka.com/monitor/download/windows)** ·
+[All downloads](https://sanka.com/monitor/download/)
+
+<br>
+
+<img src="docs/assets/sanka-monitor-overview.png" alt="Sanka Monitor's Overview: 2 risks to review, 8 of 10 security checks passing, a sidebar listing each security check with its status, and the two risks that need attention with one fix each (sample data)." width="760">
+
+</div>
+
+---
+
+## Why Sanka Monitor?
+
+- **See the risks in seconds**: the first scan runs as soon as the app opens and
+  lists what needs attention, highest first, each with one clear fix
+- **Every check explained**: disk encryption, firewall, Gatekeeper or SmartScreen,
+  screen lock, OS and automatic updates, malware protection, admin rights, device
+  management, and SIP or Secure Boot, each with its status, why it matters and
+  Re-run
+- **Programs past vendor support**: installed software is checked against the
+  lifecycle catalog bundled in the app, with the end-of-support date and a successor
+- **Shadow IT and shadow AI**: the SaaS and AI tools in use, from installed apps (and
+  your browsers' history only if you turn that on), judged against your company's
+  allowlist
+- **Local by default**: no account, no admin rights, no background service, no
+  macOS privacy prompt. The only automatic request is the update check, and it
+  sends nothing about the computer
+- **Reports your IT team can use**: an Excel IT asset ledger (IT資産台帳), a
+  one-page risk report and CSV, in English or Japanese
+- **Built for IT when you need it**: connect computers to a workspace with an
+  invite link, a company sign-in, or silently through Jamf, Kandji or Intune
+- **Open source**: Apache-2.0, signed and notarized builds, every release file with
+  a SHA-256 and a build-provenance attestation
+
+## Get started
+
+1. **Download** the app for [Mac](https://sanka.com/monitor/download/mac) (Apple
+   silicon; [universal build for Intel Macs](https://sanka.com/monitor/download/mac-universal))
+   or [Windows](https://sanka.com/monitor/download/windows) (x64).
+2. **Install**: on a Mac, drag Sanka Monitor into Applications; on Windows, run the
+   installer (no admin rights needed).
+3. **Open it.** The scan starts at once. Review the risks on **Overview**, open any
+   security check for why it matters and how to fix it, and use **Reports** to save
+   the Excel ledger or send the scan to Sanka for a review.
+
+The app updates itself: a new version downloads in the background and installs
+the next time the app restarts. You can turn the update check off under Privacy.
+
+| | Requirement |
+| --- | --- |
+| macOS | 13 Ventura or later; Apple silicon, or Intel with the universal build |
+| Windows | Windows 10 or 11, x64 |
+| Account | None. A Sanka account is needed only to send a report to Sanka |
+
+## Your data
+
+Sanka Monitor reads the computer's security settings, its installed apps and
+programs, and its identity (model, OS version, computer name, serial number).
+Your browsers' history is read only if you turn on the browser check, and even
+then web addresses and page titles are never stored, written to a report or sent.
+
+It never collects window titles, document names, screen contents, keystrokes,
+the clipboard, the files on the computer, or how long any app was used. The
+**Privacy** page in the app lists everything the app has sent, exactly as sent.
+Details are in [How it works](#how-it-works) and [SECURITY.md](SECURITY.md).
+
+## For IT teams
+
+Connect computers to your workspace on monitor.sanka.com for continuous
+visibility of security checks and installed software across the fleet.
+
+| Way to connect | Best for |
+| --- | --- |
+| **Device management** (Jamf Pro, Kandji, Intune): install the signed `.pkg` or MSI and place a deployment token | Fleets: nothing for employees to do. See [docs/mdm-deployment.md](docs/mdm-deployment.md) |
+| **Invite link** by email or a shareable link | Small teams: one click opens "Connect to your company?" in the app |
+| **Sign in with your company** | People who have a Sanka account in the workspace |
+| **One-time code** | Help-desk sessions |
+
+Connecting never turns on app-usage sharing: that stays each person's choice, off
+by default. For a one-off inventory without connecting anything,
+`sanka-monitor-agent scan --out <folder>` writes one CSV per computer and the
+workbooks in `templates/fleet/` merge them ([docs/fleet-scan.md](docs/fleet-scan.md)).
+
+## How it works
+
+Sanka Monitor is local-first:
 
 - **Local scan, the default.** No account and no enrollment. The app scans the
   computer, reads the result against the lifecycle catalog bundled in the app
