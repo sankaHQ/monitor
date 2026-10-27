@@ -265,10 +265,10 @@ export const STRINGS: Record<Lang, Strings> = {
     send: {
       title: "Send to Sanka",
       intro:
-        "Your Sanka contact reviews the risks with you. Sanka Monitor builds the Excel report from this scan and shows what will be sent; nothing leaves this computer until you press Send.",
+        "Sanka reviews the risks with you. Sanka Monitor builds the Excel report from this scan and shows what will be sent; nothing leaves this computer until you press Send to Sanka.",
       signInTitle: "Sign in to send",
       signInIntro:
-        "Sending uses your Sanka account, so the report reaches your Sanka contact with your name and company. Signing in opens your browser: use Google, Microsoft or email, or create a free account. Scanning never needs an account.",
+        "Sending uses your Sanka account, so Sanka receives the report with your name, email address and company. Signing in opens your browser: use Google, Microsoft or email, or create a free account. Scanning never needs an account.",
       signIn: "Sign in with your browser",
       waiting:
         "Finish signing in in your browser. If Sanka Monitor does not come back by itself, paste the sign-in code here.",
@@ -513,10 +513,10 @@ export const STRINGS: Record<Lang, Strings> = {
     send: {
       title: "Sankaに送信",
       intro:
-        "Sankaの担当者がリスクを一緒に確認します。Sanka MonitorがこのスキャンからExcelのレポートを作成し、送信する内容を表示します。［送信］を押すまで、このPCからは何も送信しません。",
+        "Sankaがリスクを一緒に確認します。Sanka MonitorがこのスキャンからExcelのレポートを作成し、送信する内容を表示します。［Sankaに送信］を押すまで、このPCからは何も送信しません。",
       signInTitle: "サインインして送信",
       signInIntro:
-        "送信にはSankaのアカウントを使います。レポートは、あなたの名前と会社名でSankaの担当者に届きます。サインインはブラウザーで行います。Google、Microsoft、メールアドレスのいずれかでサインインするか、無料のアカウントを作成してください。スキャンにアカウントは不要です。",
+        "送信にはSankaのアカウントを使います。Sankaは、あなたの名前、メールアドレス、会社名とあわせてレポートを受け取ります。サインインはブラウザーで行います。Google、Microsoft、メールアドレスのいずれかでサインインするか、無料のアカウントを作成してください。スキャンにアカウントは不要です。",
       signIn: "ブラウザーでサインイン",
       waiting:
         "ブラウザーでサインインを完了してください。Sanka Monitorに自動で戻らない場合は、サインインコードをここに貼り付けてください。",
