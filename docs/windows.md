@@ -88,16 +88,17 @@ both updaters. The Windows job, on `windows-latest`:
    interactive login.
 2. Signs a small throwaway .NET program first, so a signing problem stops the job
    before the Rust build.
-3. Builds the NSIS installer (`--bundles nsis`). Tauri calls
+3. Builds the NSIS installer and the per-machine MSI (`--bundles nsis,msi`). Tauri calls
    `scripts/sign-windows.ps1` for the executables it packages and for the installer
    through a structured `signCommand`, so spaces in paths survive. Each file gets a
    SHA-256 Authenticode signature with the description "Sanka Monitor" and a SHA-256
    RFC 3161 timestamp from `http://timestamp.acs.microsoft.com`. The build also signs
    the installer for the updater (`*-setup.exe.sig`, Monitor's updater key): the
    installer is the update package, and `latest.json` points `windows-x86_64` at
-   `sanka-monitor_<version>_x64-setup.exe`.
-4. Extracts `sanka-monitor-agent.exe` from the installer with 7-Zip and checks it and
-   the installer with `Get-AuthenticodeSignature`: status Valid, publisher
+   `Sanka-Monitor-<version>-x64-setup.exe`. The MSI installs for every user of the PC,
+   for device management (Intune); it is not an update package.
+4. Extracts `sanka-monitor-agent.exe` from the installer with 7-Zip and checks it, the
+   installer and the MSI with `Get-AuthenticodeSignature`: status Valid, publisher
    `Sanka, Inc.`, timestamped. Tauri puts an unsigned copy of the executable back in
    `target/` after bundling, so only the extracted one counts. The results and the
    SHA-256 of both files stay in the run as `windows-signatures.json`, next to the

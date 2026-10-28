@@ -433,6 +433,10 @@ async fn request_revoke(
 
 /// A link to `sanka-monitor://…` opened the app, or reached the running one.
 pub fn handle_deep_link(app: &AppHandle, raw: &str) {
+    if let Some(invite) = crate::enrollment::invite_from_deep_link(raw) {
+        crate::enrollment::handle_invite_link(app, invite);
+        return;
+    }
     let Some((code, returned_state)) = callback_params(raw) else {
         return;
     };

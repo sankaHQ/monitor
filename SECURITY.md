@@ -2,10 +2,27 @@
 
 ## Supported versions
 
-Sanka Monitor is pre-1.0. Security fixes go into the latest release published on
-[sankaHQ/monitor-releases](https://github.com/sankaHQ/monitor-releases); older
-releases do not receive backports. The app updates itself from that feed unless the
-person turned automatic update checks off.
+Sanka Monitor is pre-1.0. Security fixes go into the latest release, published on
+this repository's [releases](https://github.com/sankaHQ/monitor/releases) and on
+`https://release.sanka.com/monitor/`; older releases do not receive backports. The
+app updates itself from that feed unless the person, or device management, turned
+automatic update checks off. Releases up to 0.3.x were published on
+[sankaHQ/monitor-releases](https://github.com/sankaHQ/monitor-releases); they don't update
+to 0.4.0 by themselves, so reinstall from https://sanka.com/monitor/download/.
+
+## Verifying a download
+
+Every release file is listed in the release's `SHA256SUMS` and carries a GitHub
+build-provenance attestation that ties it to this repository's release workflow:
+
+```bash
+shasum -a 256 -c SHA256SUMS --ignore-missing
+gh attestation verify Sanka-Monitor-X.Y.Z-arm64.dmg --repo sankaHQ/monitor
+```
+
+On a Mac, `spctl --assess --type open --context context:primary-signature -v` on the
+DMG and `pkgutil --check-signature` on the `.pkg` show the Developer ID signature and
+the notarization. On Windows, the installer and the MSI are signed by Sanka, Inc.
 
 ## Reporting a vulnerability
 

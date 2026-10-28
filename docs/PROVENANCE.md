@@ -8,7 +8,7 @@ a meeting recorder; none of its product code is included here.
 
 | Here | Notes |
 | --- | --- |
-| `.github/workflows/release.yml` | The same signing, notarization and updater-manifest flow, rewritten for Tauri v2 env-driven signing (`APPLE_*`, `TAURI_SIGNING_*`), with a dry-run mode and publishing to `sankaHQ/monitor-releases`. |
+| `.github/workflows/release.yml` | The same signing, notarization and updater-manifest flow, rewritten for Tauri v2 env-driven signing (`APPLE_*`, `TAURI_SIGNING_*`), with a dry-run mode; since 0.4.0 it publishes to this repository and release.sanka.com. |
 | `apps/agent/src-tauri/icons/` | The Sanka app icon, copied as is. |
 | `apps/agent/src-tauri/tauri.conf.json` | The skeleton only. New identifier `com.sanka.monitor`, scheme `sanka-monitor://`, a macOS 13.0 floor, and an updater endpoint on the public releases repository. |
 

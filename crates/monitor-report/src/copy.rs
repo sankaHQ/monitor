@@ -702,6 +702,83 @@ pub fn check_label(id: PostureCheckId, platform: &str, lang: Lang) -> &'static s
     }
 }
 
+/// The check's short name, as the app's sidebar lists it.
+pub fn check_name(id: PostureCheckId, platform: &str, lang: Lang) -> &'static str {
+    use PostureCheckId::*;
+    let windows = platform == "windows";
+    match (id, windows) {
+        (DiskEncryption, _) => lang.pick("Disk encryption", "ディスク暗号化"),
+        (Firewall, _) => lang.pick("Firewall", "ファイアウォール"),
+        (Gatekeeper, false) => lang.pick("Gatekeeper", "Gatekeeper"),
+        (Gatekeeper, true) => lang.pick("SmartScreen", "SmartScreen"),
+        (ScreenLock, _) => lang.pick("Screen lock", "画面ロック"),
+        (OsUpdate, _) => lang.pick("OS updates", "OS アップデート"),
+        (AutomaticUpdates, _) => lang.pick("Automatic updates", "自動アップデート"),
+        (Antivirus, false) => lang.pick("Malware protection", "マルウェア対策"),
+        (Antivirus, true) => lang.pick("Antivirus", "ウイルス対策"),
+        (LocalAdmin, _) => lang.pick("Standard account", "標準アカウント"),
+        (DeviceManagement, _) => lang.pick("Device management", "デバイス管理"),
+        (SecureBoot, _) => lang.pick("Secure Boot", "セキュアブート"),
+        (SystemIntegrity, _) => lang.pick("System Integrity", "システム整合性保護"),
+    }
+}
+
+/// Why the check matters, in one or two sentences, for its page in the app.
+pub fn check_why(id: PostureCheckId, platform: &str, lang: Lang) -> &'static str {
+    use PostureCheckId::*;
+    let windows = platform == "windows";
+    match (id, windows) {
+        (DiskEncryption, _) => lang.pick(
+            "If this computer is lost or stolen, encryption keeps its files unreadable without your password.",
+            "PC を紛失したり盗まれたりしても、暗号化されていればパスワードなしではファイルを読めません。",
+        ),
+        (Firewall, _) => lang.pick(
+            "Blocks unwanted incoming connections from other devices on the same network.",
+            "同じネットワーク上のほかの機器からの不要な接続を防ぎます。",
+        ),
+        (Gatekeeper, false) => lang.pick(
+            "Only apps from identified developers open, so unknown downloads can't run without a warning.",
+            "確認済みの開発元のアプリだけが開くため、不明なダウンロードが警告なしに実行されることはありません。",
+        ),
+        (Gatekeeper, true) => lang.pick(
+            "Warns before unknown or unsafe apps and downloads run.",
+            "不明なアプリや安全でないダウンロードを実行する前に警告します。",
+        ),
+        (ScreenLock, _) => lang.pick(
+            "Asks for your password soon after the screen locks, so nobody can use the computer while you're away.",
+            "画面がロックされた後すぐにパスワードを求めるため、席を離れている間にほかの人が PC を使うことはできません。",
+        ),
+        (OsUpdate, _) => lang.pick(
+            "OS updates fix security holes that attackers already know about.",
+            "OS のアップデートは、すでに知られているセキュリティ上の欠陥を修正します。",
+        ),
+        (AutomaticUpdates, _) => lang.pick(
+            "Security fixes arrive without anyone having to remember to install them.",
+            "インストールし忘れることなく、セキュリティ修正が届きます。",
+        ),
+        (Antivirus, _) => lang.pick(
+            "Blocks known malicious software before it can run.",
+            "既知の悪意あるソフトウェアを実行前にブロックします。",
+        ),
+        (LocalAdmin, _) => lang.pick(
+            "Anything you run as an administrator can change the whole computer, malware included. A standard account limits the damage.",
+            "管理者として実行したものは、マルウェアも含めて PC 全体を変更できます。標準アカウントなら被害を小さくできます。",
+        ),
+        (DeviceManagement, _) => lang.pick(
+            "A managed computer gets your company's security settings and can be locked or wiped if it's lost.",
+            "管理対象の PC には会社のセキュリティ設定が適用され、紛失時にはロックや消去ができます。",
+        ),
+        (SecureBoot, _) => lang.pick(
+            "Stops malicious software from loading before Windows starts.",
+            "Windows の起動前に悪意あるソフトウェアが読み込まれるのを防ぎます。",
+        ),
+        (SystemIntegrity, _) => lang.pick(
+            "Stops anything, administrators included, from changing protected parts of macOS.",
+            "管理者を含め、だれも macOS の保護された部分を変更できないようにします。",
+        ),
+    }
+}
+
 pub fn platform(platform: &str) -> &str {
     match platform {
         "macos" => "macOS",

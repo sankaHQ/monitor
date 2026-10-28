@@ -42,8 +42,8 @@ use monitor_posture::PostureCheckResult;
 use monitor_store::sqlite::StoreResult;
 use monitor_store::{PolicyOutcome, SqliteQueue};
 use monitor_sync::{
-    AgentClient, AgentEndpoint, CheckinData, CheckinRequest, EventBatchRequest, PersonViewsData,
-    RevokeData, SaasUploadRequest, SaasUseItem, SoftwareUploadRequest, SyncError,
+    AgentClient, AgentEndpoint, CheckinData, CheckinRequest, EnrollRequest, EventBatchRequest,
+    PersonViewsData, RevokeData, SaasUploadRequest, SaasUseItem, SoftwareUploadRequest, SyncError,
     WorkspaceAllowlist, PERSON_VIEWS_LIMIT,
 };
 use serde::{Deserialize, Serialize};
@@ -148,6 +148,34 @@ pub struct AgentConfig {
     pub saas_sharing: bool,
     /// The workspace's SaaS allowlist, from the latest check-in.
     pub workspace_allowlist: Option<WorkspaceAllowlist>,
+    /// The workspace's name, from enrollment (0.4 APIs send it).
+    pub workspace_name: Option<String>,
+    /// Device management connected this computer (a deployment token in
+    /// managed preferences).
+    pub managed: bool,
+    /// The workspace said a managed computer may not disconnect itself;
+    /// managed preferences' `AllowDisconnect` overrides it.
+    pub disconnect_locked: bool,
+    /// The computer's owner as the workspace knows it, when it said.
+    pub owner_email: Option<String>,
+    /// How this computer connected: `code`, `invite`, `deployment_token`
+    /// or `sign_in`.
+    pub enrollment_method: Option<String>,
+    /// Connected, but an admin has not approved the device yet: the token
+    /// request is refused until then, and the check-in loop keeps asking.
+    pub pending_approval: bool,
+    /// The hash of the deployment token device management last connected
+    /// with. Kept across removal, so a removed computer doesn't connect
+    /// itself again with the same token.
+    pub managed_token_hash: Option<String>,
+    /// The person disconnected this computer themselves: device management's
+    /// token doesn't connect it again until a different token is placed.
+    pub disconnected_by_person: bool,
+    /// The version that last ran here: a different one means the app was
+    /// just updated, and says so once.
+    pub last_run_version: Option<String>,
+    /// The release notes of the update staged for the next launch.
+    pub update_notes: Option<String>,
 }
 
 impl AgentConfig {
@@ -264,6 +292,9 @@ impl AgentConfig {
             browser_saas_check: self.browser_saas_check,
             check_schedule: self.check_schedule,
             last_scheduled_check_at: self.last_scheduled_check_at,
+            managed_token_hash: self.managed_token_hash.clone(),
+            last_run_version: self.last_run_version.clone(),
+            update_notes: self.update_notes.clone(),
             ..AgentConfig::default()
         }
     }
@@ -281,6 +312,7 @@ impl AgentConfig {
             device_id: Some(device_id.to_string()),
             workspace_id: Some(workspace_id.to_string()),
             removed_by_workspace_at: None,
+            disconnected_by_person: false,
             ..self.clone()
         };
         next.set_sharing(sharing, now);
@@ -291,6 +323,7 @@ impl AgentConfig {
     /// device, which deletes the usage records it received.
     pub fn disconnected(&self) -> AgentConfig {
         let mut next = self.unenrolled();
+        next.disconnected_by_person = true;
         if let Some(device_id) = &self.device_id {
             if !next.pending_revokes.contains(device_id) {
                 next.pending_revokes.push(device_id.clone());
@@ -409,7 +442,24 @@ pub struct StatusView {
     pub update_checks: bool,
     pub last_update_check_at: Option<DateTime<Utc>>,
     pub update_check_error: Option<String>,
+    pub workspace_name: Option<String>,
+    pub managed: bool,
+    /// Disconnect is offered: false for a managed computer whose device
+    /// management or workspace doesn't allow it.
+    pub can_disconnect: bool,
+    pub owner_email: Option<String>,
+    pub enrollment_method: Option<String>,
+    pub pending_approval: bool,
+    /// A newer version is downloaded and installs when the app restarts.
+    pub update_ready: Option<crate::updates::UpdateInfo>,
+    /// The app was just updated to this version: its notes, shown once.
+    pub just_updated: Option<crate::updates::UpdateInfo>,
+    pub first_run: bool,
 }
+
+/// The window reloads the status when this fires (an enrollment it didn't
+/// start, an update that finished downloading).
+pub const STATUS_EVENT: &str = "status-changed";
 
 /// Lock order: `config` before `usage`. Collection is switched while the
 /// config lock is held, so it always matches the config that was just saved.
@@ -469,6 +519,15 @@ pub struct AgentState {
     pub saas_sharing_lock: Mutex<()>,
     /// One read-modify-write of the regular checks' state at a time.
     pub checks_lock: Mutex<()>,
+    /// A downloaded update waiting for the app to restart.
+    pub staged_update: Mutex<Option<crate::updates::Staged>>,
+    /// This launch is the first after an update; its notes show until dismissed.
+    pub just_updated: Mutex<bool>,
+    /// No version of the app ran here before this launch: the window opens on
+    /// the welcome screen.
+    pub first_run: Mutex<bool>,
+    /// An invite link opened before the window could show it.
+    pub pending_invite: Mutex<Option<String>>,
 }
 
 fn config_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -633,6 +692,7 @@ async fn checkin_once(app: &AppHandle, with_posture: bool) -> Result<CheckinData
         },
         // Read just before sending (below), not with the rest of the config.
         saas_sharing: None,
+        arch: Some(crate::enrollment::arch().to_string()),
         posture: posture.clone(),
     };
 
@@ -641,7 +701,15 @@ async fn checkin_once(app: &AppHandle, with_posture: bool) -> Result<CheckinData
     }
 
     let token = match client.issue_token(&device_id, &secret).await {
-        Ok(token) => token,
+        Ok(token) => {
+            let mut config = state.config.lock().await;
+            if config.pending_approval && config.device_id.as_deref() == Some(device_id.as_str()) {
+                // Approved: this is the first token the workspace issued.
+                config.pending_approval = false;
+                let _ = save_config(app, &config);
+            }
+            token
+        }
         // The check-in was never attempted, so nothing is recorded in the
         // Transparency history — it lists only requests actually made.
         Err(err) => return Err(call_failed(app, &device_id, err).await),
@@ -981,6 +1049,12 @@ pub async fn status_view(app: &AppHandle) -> StatusView {
         .unwrap_or_else(|_| collect_device_info());
     let last_update_check_at = *state.last_update_check_at.lock().await;
     let update_check_error = state.update_check_error.lock().await.clone();
+    let prefs = tauri::async_runtime::spawn_blocking(crate::enrollment::managed_prefs)
+        .await
+        .unwrap_or_default();
+    let update_ready = crate::updates::ready(app).await;
+    let just_updated = crate::updates::just_updated(app, &config).await;
+    let first_run = *state.first_run.lock().await;
     StatusView {
         enrolled: config.enrolled(),
         agent_version: AGENT_VERSION.to_string(),
@@ -1018,7 +1092,34 @@ pub async fn status_view(app: &AppHandle) -> StatusView {
         update_checks: !config.update_checks_off,
         last_update_check_at,
         update_check_error,
+        workspace_name: config.workspace_name.clone(),
+        managed: config.managed,
+        can_disconnect: crate::enrollment::disconnect_allowed(&config, &prefs),
+        owner_email: config.owner_email.clone(),
+        enrollment_method: config.enrollment_method.clone(),
+        pending_approval: config.enrolled() && config.pending_approval,
+        update_ready,
+        just_updated,
+        first_run,
     }
+}
+
+/// Remembers which version runs now: the first launch ever opens on the
+/// welcome screen, and the first after an update shows its notes.
+pub fn note_this_version(config: &mut AgentConfig) -> (bool, bool) {
+    let first_run = config.last_run_version.is_none();
+    let updated = config
+        .last_run_version
+        .as_deref()
+        .is_some_and(|previous| previous != AGENT_VERSION);
+    config.last_run_version = Some(AGENT_VERSION.to_string());
+    (first_run, updated)
+}
+
+/// The welcome screen was seen.
+#[tauri::command]
+pub async fn finish_first_run(app: AppHandle) {
+    *app.state::<AgentState>().first_run.lock().await = false;
 }
 
 #[tauri::command]
@@ -1026,26 +1127,61 @@ pub async fn get_status(app: AppHandle) -> StatusView {
     status_view(&app).await
 }
 
+/// Connects with a one-time code from the workspace.
 #[tauri::command]
 pub async fn enroll(
     app: AppHandle,
     code: String,
     sharing_consent: bool,
 ) -> Result<StatusView, String> {
-    let state: State<'_, AgentState> = app.state();
-    if state.config.lock().await.enrolled() {
+    let request = EnrollRequest {
+        code: Some(code.trim().to_string()),
+        machine: Some(crate::enrollment::machine_fields()),
+        ..EnrollRequest::default()
+    };
+    enroll_with(&app, request, sharing_consent, "code", None).await
+}
+
+pub async fn ensure_not_enrolled(app: &AppHandle) -> Result<(), String> {
+    if app.state::<AgentState>().config.lock().await.enrolled() {
         return Err("this device is already enrolled".to_string());
     }
+    Ok(())
+}
+
+/// Connects with one credential (a code, an invite or a deployment token).
+/// `managed_token_hash` is set for device management's token.
+pub async fn enroll_with(
+    app: &AppHandle,
+    request: EnrollRequest,
+    sharing_consent: bool,
+    method: &str,
+    managed_token_hash: Option<String>,
+) -> Result<StatusView, String> {
+    ensure_not_enrolled(app).await?;
+    let api_base = app.state::<AgentState>().config.lock().await.api_base();
+    let client = AgentClient::new(api_base, AGENT_VERSION).map_err(|err| err.to_string())?;
     // Revokes still owed go first: the new device's first check-in revokes
     // this machine's earlier enrollments but keeps their usage records, and
     // after that no revoke from here can delete them.
-    settle_pending_revokes(&app).await;
-    let api_base = state.config.lock().await.api_base();
-    let client = AgentClient::new(api_base, AGENT_VERSION).map_err(|err| err.to_string())?;
+    settle_pending_revokes(app).await;
     let enrollment = client
-        .enroll(code.trim())
+        .enroll(&request)
         .await
         .map_err(|err| err.to_string())?;
+    finish_enrollment(app, enrollment, sharing_consent, method, managed_token_hash).await
+}
+
+/// Keeps the credential the workspace issued and starts checking in.
+pub async fn finish_enrollment(
+    app: &AppHandle,
+    enrollment: monitor_sync::EnrollmentData,
+    sharing_consent: bool,
+    method: &str,
+    managed_token_hash: Option<String>,
+) -> Result<StatusView, String> {
+    let app = app.clone();
+    let state: State<'_, AgentState> = app.state();
     store_device_secret(
         enrollment.device_id.clone(),
         enrollment.device_secret.clone(),
@@ -1059,6 +1195,15 @@ pub async fn enroll(
             sharing_consent,
             Utc::now(),
         );
+        next.workspace_name = enrollment.workspace_name.clone();
+        next.managed = enrollment.managed || managed_token_hash.is_some();
+        next.disconnect_locked = next.managed && !enrollment.allow_disconnect;
+        next.owner_email = enrollment.owner_email.clone();
+        next.enrollment_method = Some(method.to_string());
+        next.pending_approval = enrollment.pending_approval();
+        if managed_token_hash.is_some() {
+            next.managed_token_hash = managed_token_hash;
+        }
         // Launch at login, so collection resumes after a restart.
         enable_autostart_once(&app, &mut next);
         save_config(&app, &next)?;
@@ -1275,6 +1420,14 @@ pub async fn person_views(app: AppHandle) -> Result<Option<PersonViewsData>, Per
 #[tauri::command]
 pub async fn unenroll(app: AppHandle) -> Result<StatusView, String> {
     let state: State<'_, AgentState> = app.state();
+    let prefs = tauri::async_runtime::spawn_blocking(crate::enrollment::managed_prefs)
+        .await
+        .unwrap_or_default();
+    if !crate::enrollment::disconnect_allowed(&*state.config.lock().await, &prefs) {
+        return Err(
+            "your company manages this connection, so it can't be disconnected here".to_string(),
+        );
+    }
     // Forget the enrollment and stop collecting first: a check-in that
     // answers after this finds no device and leaves collection alone, so the
     // wipe below is final. The credential stays for the revoke.
@@ -1935,11 +2088,16 @@ mod tests {
             first.account, enrolled.account,
             "the account the person sends reports as is not part of the enrollment"
         );
+        assert!(
+            first.disconnected_by_person,
+            "device management's token must not connect it again by itself"
+        );
         assert_eq!(
             AgentConfig {
                 api_base: None,
                 pending_revokes: Vec::new(),
                 account: None,
+                disconnected_by_person: false,
                 ..first.clone()
             },
             AgentConfig::default(),

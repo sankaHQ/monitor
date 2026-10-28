@@ -16,6 +16,12 @@ If any file later incorporates code from that pinned commit, list the file here 
 retain the MIT notice in the file header. Do not copy code from screenpipe commits
 after the pinned commit without re-verifying the license.
 
+## Inter
+
+The app bundles the Inter typeface (`@fontsource-variable/inter`), Copyright (c) 2016
+The Inter Project Authors (https://github.com/rsms/inter), licensed under the SIL Open
+Font License, Version 1.1 (https://openfontlicense.org).
+
 ## Rust and npm dependencies
 
 Cargo and npm dependencies carry their own licenses; see `Cargo.lock` /

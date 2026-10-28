@@ -13,13 +13,12 @@
       {
         "label": "main",
         "title": "Sanka Monitor",
-        "width": 720,
-        "height": 540,
-        "minWidth": 560,
-        "minHeight": 420,
+        "width": 860,
+        "height": 580,
         "center": true,
-        "resizable": true,
-        "visible": false
+        "resizable": false,
+        "visible": false,
+        "maximizable": false
       }
     ],
     "security": {
@@ -39,13 +38,29 @@
     ],
     "macOS": {
       "minimumSystemVersion": "13.0",
-      "infoPlist": "Info.plist"
+      "infoPlist": "Info.plist",
+      "dmg": {
+        "background": "dmg/background.png",
+        "windowSize": {
+          "width": 640,
+          "height": 400
+        },
+        "appPosition": {
+          "x": 190,
+          "y": 210
+        },
+        "applicationFolderPosition": {
+          "x": 450,
+          "y": 210
+        }
+      }
     }
   },
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/sankaHQ/monitor-releases/releases/latest/download/latest.json"
+        "https://release.sanka.com/monitor/latest.json",
+        "https://github.com/sankaHQ/monitor/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDc1ODRCQTE3QTczRTMwOTkKUldTWk1ENm5GN3FFZGZxalUxNk9xVXo5MlkzL1k3eVYwOEhJelZJQlAxWWtSZ0Erc2tDWUx1YngK"
     },

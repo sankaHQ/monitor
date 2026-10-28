@@ -4,14 +4,14 @@ mod account;
 mod agent;
 mod checks;
 mod cli;
+mod enrollment;
 mod reports;
 mod saas;
 mod scan;
+mod tray;
 mod updates;
 mod usage;
 
-use tauri::menu::{Menu, MenuItem};
-use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager, RunEvent};
 use tauri_plugin_autostart::MacosLauncher;
 
@@ -63,7 +63,14 @@ fn main() {
             agent::open_nudge,
             agent::person_views,
             agent::unenroll,
+            agent::finish_first_run,
+            enrollment::preview_invite,
+            enrollment::enroll_with_invite,
+            enrollment::enroll_signed_in,
+            enrollment::take_pending_invite,
             updates::install_update,
+            updates::check_for_update,
+            updates::dismiss_update_notes,
             reports::scan_device,
             reports::get_scan,
             reports::save_report,
@@ -89,37 +96,13 @@ fn main() {
             checks::dismiss_nudges,
         ])
         .setup(|app| {
-            let open = MenuItem::with_id(app, "open", "Open Sanka Monitor", true, None::<&str>)?;
-            let checkin = MenuItem::with_id(app, "checkin", "Check In Now", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit Sanka Monitor", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &checkin, &quit])?;
-
-            TrayIconBuilder::with_id("main-tray")
-                .icon(
-                    app.default_window_icon()
-                        .expect("bundled window icon")
-                        .clone(),
-                )
-                .tooltip("Sanka Monitor")
-                .menu(&menu)
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "open" => show_main_window(app),
-                    "checkin" => {
-                        let app = app.clone();
-                        tauri::async_runtime::spawn(async move {
-                            let _ = agent::run_checkin(&app).await;
-                        });
-                    }
-                    "quit" => app.exit(0),
-                    _ => {}
-                })
-                .build(app)?;
+            tray::build(app.handle())?;
 
             let handle = app.handle().clone();
             let mut config = agent::load_config(&handle);
-            if agent::enable_autostart_once(&handle, &mut config) {
-                let _ = agent::save_config(&handle, &config);
-            }
+            agent::enable_autostart_once(&handle, &mut config);
+            let (first_run, just_updated) = agent::note_this_version(&mut config);
+            let _ = agent::save_config(&handle, &config);
             // Enrolled, still owing the workspace a revoke after Disconnect, or
             // running regular checks: the login item starts it with work to do.
             let has_work = config.enrolled()
@@ -129,6 +112,8 @@ fn main() {
             tauri::async_runtime::block_on(async {
                 let state: tauri::State<'_, agent::AgentState> = handle.state();
                 *state.config.lock().await = config;
+                *state.first_run.lock().await = first_run;
+                *state.just_updated.lock().await = just_updated;
             });
 
             match usage::queue_path(&handle).and_then(|path| {
@@ -153,13 +138,19 @@ fn main() {
             agent::spawn_revoke_loop(handle.clone());
             checks::spawn_schedule_loop(handle.clone());
             updates::spawn_update_loop(handle.clone());
+            tray::spawn_refresh_loop(handle.clone());
+            // Device management: a deployment token connects the computer.
+            enrollment::spawn_managed_enrollment(handle.clone());
             // The browser hands a sign-in back through sanka-monitor://.
             account::register_deep_links(&handle);
 
             // The login item starts the agent in the tray; any other launch,
             // or a device with no connected work to do, opens the window.
             let background = std::env::args().any(|arg| arg == agent::BACKGROUND_ARG);
-            if !has_work || !background {
+            // An update installed while the window was closed relaunches here,
+            // and stays in the tray like the app it replaced.
+            let relaunched = updates::take_background_relaunch(&handle);
+            if !relaunched && (!has_work || !background) {
                 show_main_window(&handle);
             }
             Ok(())
