@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AppContext } from "../context";
 import { formatWhen, LANGUAGE_NAMES } from "../i18n";
-import type { CheckSchedule, Lang, SaasSettings, Theme, UpdateInfo } from "../types";
+import type { CheckSchedule, Lang, LangChoice, SaasSettings, Theme, UpdateInfo } from "../types";
 import { PageTitle, Row, Segmented, Switch } from "../ui";
 
 type Schedule = "off" | CheckSchedule;
@@ -98,6 +98,20 @@ export function SettingsPage({ ctx }: { ctx: AppContext }) {
             />
           </Row>
         ) : null}
+        <Row title={t.language}>
+          <Segmented<LangChoice>
+            value={ctx.langChoice}
+            label={t.language}
+            options={[
+              { value: "system", label: t.languageSystem },
+              ...(Object.keys(LANGUAGE_NAMES) as Lang[]).map((code) => ({
+                value: code,
+                label: LANGUAGE_NAMES[code],
+              })),
+            ]}
+            onChange={ctx.setLangChoice}
+          />
+        </Row>
         <Row title={t.reportLanguage}>
           <Segmented<Lang>
             value={reportLang}

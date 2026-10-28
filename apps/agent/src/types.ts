@@ -2,6 +2,9 @@
 
 export type Lang = "en" | "ja";
 
+/** Settings → Language: the system's language (English when it isn't Japanese), or a fixed one. */
+export type LangChoice = "system" | Lang;
+
 export type Theme = "system" | "light" | "dark";
 
 export type PostureCheck = {

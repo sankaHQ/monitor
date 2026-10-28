@@ -6,6 +6,7 @@ mod agent;
 mod checks;
 mod cli;
 mod enrollment;
+mod locale;
 mod reports;
 mod saas;
 mod scan;
@@ -19,27 +20,8 @@ use tauri_plugin_autostart::MacosLauncher;
 /// The window opens on Settings and checks for a newer version.
 pub(crate) const CHECK_FOR_UPDATES_EVENT: &str = "check-for-updates";
 
-/// The macOS app menu with Check for Updates… after About.
-#[cfg(target_os = "macos")]
-fn app_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
-    use tauri::menu::{Menu, MenuItem};
-    let menu = Menu::default(app)?;
-    if let Some(app_menu) = menu
-        .items()?
-        .first()
-        .and_then(|item| item.as_submenu().cloned())
-    {
-        let check = MenuItem::with_id(
-            app,
-            "check-for-updates",
-            "Check for Updates…",
-            true,
-            None::<&str>,
-        )?;
-        app_menu.insert(&check, 1)?;
-    }
-    Ok(menu)
-}
+/// The app menu item that opens Settings and checks for an update.
+pub(crate) const CHECK_FOR_UPDATES_MENU_ID: &str = "check-for-updates";
 
 pub(crate) fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
@@ -79,12 +61,13 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(agent::AgentState::default())
         .on_menu_event(|app, event| {
-            if event.id().as_ref() == "check-for-updates" {
+            if event.id().as_ref() == CHECK_FOR_UPDATES_MENU_ID {
                 show_main_window(app);
                 let _ = tauri::Emitter::emit(app, CHECK_FOR_UPDATES_EVENT, ());
             }
         })
         .invoke_handler(tauri::generate_handler![
+            locale::set_ui_language,
             acks::acknowledge_check,
             agent::get_status,
             agent::enroll,
@@ -132,8 +115,6 @@ fn main() {
         ])
         .setup(|app| {
             tray::build(app.handle())?;
-            #[cfg(target_os = "macos")]
-            app.set_menu(app_menu(app.handle())?)?;
 
             let handle = app.handle().clone();
             let mut config = agent::load_config(&handle);
@@ -152,6 +133,14 @@ fn main() {
                 *state.first_run.lock().await = first_run;
                 *state.just_updated.lock().await = just_updated;
             });
+            // Native menus in the language the window last chose; the window
+            // reports it again once it has loaded.
+            #[cfg(target_os = "macos")]
+            {
+                let lang = tauri::async_runtime::block_on(locale::current(&handle));
+                app.set_menu(locale::app_menu(&handle, lang)?)?;
+            }
+            tauri::async_runtime::block_on(tray::refresh(&handle));
 
             match usage::queue_path(&handle).and_then(|path| {
                 monitor_store::SqliteQueue::open(&path).map_err(|err| err.to_string())
