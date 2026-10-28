@@ -28,7 +28,9 @@ impl UiLang {
     }
 }
 
-/// The native strings in one language.
+/// The native strings in one language. The app-menu ones are read on macOS
+/// only: Windows has no app menu.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub struct Text {
     pub open: &'static str,
     pub scan_now: &'static str,

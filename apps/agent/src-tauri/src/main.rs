@@ -135,9 +135,11 @@ fn main() {
             });
             // Native menus in the language the window last chose; the window
             // reports it again once it has loaded.
-            let lang = tauri::async_runtime::block_on(locale::current(&handle));
             #[cfg(target_os = "macos")]
-            app.set_menu(locale::app_menu(&handle, lang)?)?;
+            {
+                let lang = tauri::async_runtime::block_on(locale::current(&handle));
+                app.set_menu(locale::app_menu(&handle, lang)?)?;
+            }
             tauri::async_runtime::block_on(tray::refresh(&handle));
 
             match usage::queue_path(&handle).and_then(|path| {
