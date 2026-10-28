@@ -34,6 +34,7 @@ struct View {
     status: String,
     connected: bool,
     update: Option<String>,
+    lang: crate::locale::UiLang,
 }
 
 static SHOWN: StdMutex<Option<View>> = StdMutex::new(None);
@@ -53,6 +54,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
         status: "Sanka Monitor".to_string(),
         connected: false,
         update: None,
+        lang: crate::locale::UiLang::En,
     };
     let builder = TrayIconBuilder::with_id(TRAY_ID)
         .tooltip("Sanka Monitor")
@@ -73,11 +75,12 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
 }
 
 fn menu(app: &AppHandle, view: &View) -> tauri::Result<Menu<Wry>> {
+    let t = crate::locale::text(view.lang);
     let status = MenuItem::with_id(app, "status", &view.status, false, None::<&str>)?;
-    let open = MenuItem::with_id(app, "open", "Open Sanka Monitor", true, None::<&str>)?;
-    let scan = MenuItem::with_id(app, "scan", "Scan Now", true, None::<&str>)?;
-    let checkin = MenuItem::with_id(app, "checkin", "Check In Now", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit Sanka Monitor", true, Some("CmdOrCtrl+Q"))?;
+    let open = MenuItem::with_id(app, "open", t.open, true, None::<&str>)?;
+    let scan = MenuItem::with_id(app, "scan", t.scan_now, true, None::<&str>)?;
+    let checkin = MenuItem::with_id(app, "checkin", t.check_in_now, true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", t.quit, true, Some("CmdOrCtrl+Q"))?;
     let menu = Menu::with_items(
         app,
         &[&status, &PredefinedMenuItem::separator(app)?, &open, &scan],
@@ -89,7 +92,7 @@ fn menu(app: &AppHandle, view: &View) -> tauri::Result<Menu<Wry>> {
         let restart = MenuItem::with_id(
             app,
             "restart",
-            format!("Restart to Update ({version})"),
+            (t.restart_to_update)(version),
             true,
             None::<&str>,
         )?;
@@ -159,18 +162,19 @@ async fn current(app: &AppHandle) -> View {
     } else {
         Look::Ok
     };
+    let lang = crate::locale::current(app).await;
+    let t = crate::locale::text(lang);
     let status = if paused {
-        "Paused by your workspace".to_string()
+        t.paused.to_string()
     } else if removed {
-        "Removed by your workspace".to_string()
+        t.removed.to_string()
     } else if pending {
-        "Waiting for your workspace to approve".to_string()
+        t.pending.to_string()
     } else {
         match risks {
-            None => "Not scanned yet".to_string(),
-            Some(0) => "No risks found".to_string(),
-            Some(1) => "1 risk to review".to_string(),
-            Some(n) => format!("{n} risks to review"),
+            None => t.not_scanned.to_string(),
+            Some(0) => t.no_risks.to_string(),
+            Some(n) => (t.risks)(n),
         }
     };
     View {
@@ -178,6 +182,7 @@ async fn current(app: &AppHandle) -> View {
         status,
         connected,
         update,
+        lang,
     }
 }
 

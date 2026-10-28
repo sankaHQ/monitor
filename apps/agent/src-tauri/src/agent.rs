@@ -182,6 +182,9 @@ pub struct AgentConfig {
     /// When an acknowledgeable check first failed in a row of scans, by check
     /// id; it starts the week before an unacknowledged admin account fails.
     pub failing_since: BTreeMap<String, DateTime<Utc>>,
+    /// The language of the menu bar menu and app menu (`en`, `ja`), as the
+    /// window last resolved it from Settings → Language (locale.rs).
+    pub ui_language: Option<String>,
 }
 
 impl AgentConfig {

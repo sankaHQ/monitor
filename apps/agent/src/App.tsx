@@ -13,11 +13,13 @@ import { SettingsPage } from "./pages/Settings";
 import { SoftwarePage } from "./pages/Software";
 import { JoinSheet, WorkspacePage } from "./pages/Workspace";
 import { Sidebar } from "./Sidebar";
-import type { Account, Lang, SaasSettings, SavedReport, ScanView, SentPayload, Status, Theme } from "./types";
+import type { Account, Lang, LangChoice, SaasSettings, SavedReport, ScanView, SentPayload, Status, Theme } from "./types";
 
 // The app follows the OS language. Reports can be saved in another language,
 // chosen in Reports and Settings; the key predates that and keeps an earlier choice.
 const REPORT_LANG_KEY = "sanka-monitor.report-lang";
+// The app's language, chosen in Settings: the system's (default), English or Japanese.
+const APP_LANG_KEY = "sanka-monitor.app-lang";
 // System, Light or Dark, chosen in Settings.
 const THEME_KEY = "sanka-monitor.theme";
 const THEMES: readonly Theme[] = ["system", "light", "dark"];
@@ -46,7 +48,10 @@ export default function App() {
   const [screen, setScreen] = useState<Screen>("overview");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [lang] = useState<Lang>(systemLang);
+  const [langChoice, setLangChoiceState] = useState<LangChoice>(() =>
+    stored(APP_LANG_KEY, ["system", ...(Object.keys(STRINGS) as Lang[])], "system"),
+  );
+  const lang: Lang = langChoice === "system" ? systemLang() : langChoice;
   const [reportLang, setReportLangState] = useState<Lang>(() =>
     stored(REPORT_LANG_KEY, Object.keys(STRINGS) as Lang[], systemLang()),
   );
@@ -65,8 +70,10 @@ export default function App() {
   const scanned = useRef(false);
   const s = STRINGS[lang];
 
+  // The menu bar menu and the app menu follow the window's language.
   useEffect(() => {
     document.documentElement.lang = lang;
+    invoke("set_ui_language", { lang }).catch(() => {});
   }, [lang]);
 
   // The page's colours and the window's title bar follow the choice; "system"
@@ -230,6 +237,18 @@ export default function App() {
     invoke<SavedReport[]>("get_saved_reports").then(setSaved).catch(() => {});
   }, [lang, runScan]);
 
+  // A new language shows the scan the app holds in it at once.
+  const setLangChoice = (next: LangChoice) => {
+    setLangChoiceState(next);
+    remember(APP_LANG_KEY, next);
+  };
+  const shownLang = useRef(lang);
+  useEffect(() => {
+    if (shownLang.current === lang) return;
+    shownLang.current = lang;
+    refreshScan();
+  }, [lang, refreshScan]);
+
   const setReportLang = (next: Lang) => {
     setReportLangState(next);
     remember(REPORT_LANG_KEY, next);
@@ -310,6 +329,8 @@ export default function App() {
     setError,
     setReportLang,
     setTheme,
+    langChoice,
+    setLangChoice,
     openSend: () => setSendOpen(true),
     restartToUpdate,
   };

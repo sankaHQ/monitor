@@ -43,6 +43,8 @@ an optional console for IT at [monitor.sanka.com](https://monitor.sanka.com).
 - **Local by default**: no account, no admin rights, no background service, no
   macOS privacy prompt. The only automatic request is the update check, and it
   sends nothing about the computer
+- **English and Japanese**: the app, its menus and its reports follow your
+  computer's language, and you can switch in Settings
 - **Reports your IT team can use**: an Excel IT asset ledger (IT資産台帳), a
   one-page risk report and CSV, in English or Japanese
 - **Built for IT when you need it**: connect computers to a workspace with an

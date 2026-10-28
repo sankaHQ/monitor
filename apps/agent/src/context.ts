@@ -1,5 +1,5 @@
 import type { Strings } from "./i18n";
-import type { Account, Lang, SaasSettings, SavedReport, ScanView, SentPayload, Status, Theme } from "./types";
+import type { Account, Lang, LangChoice, SaasSettings, SavedReport, ScanView, SentPayload, Status, Theme } from "./types";
 
 /** The sidebar's destinations; a check's page is `check:<id>`. */
 export type Screen =
@@ -26,6 +26,9 @@ export type AppContext = {
   saved: SavedReport[];
   busy: boolean;
   reportLang: Lang;
+  /** Settings → Language; `lang` is what it resolves to. */
+  langChoice: LangChoice;
+  setLangChoice: (choice: LangChoice) => void;
   theme: Theme;
   go: (screen: Screen) => void;
   /** Bumped by Check for Updates… in the app menu; Settings checks when it changes. */

@@ -303,6 +303,8 @@ export type Strings = {
     launchAtLogin: string;
     launchHint: string;
     reportLanguage: string;
+    language: string;
+    languageSystem: string;
     version: (version: string) => string;
     upToDate: (at: string) => string;
     downloaded: (version: string) => string;
@@ -666,6 +668,8 @@ export const STRINGS: Record<Lang, Strings> = {
       launchAtLogin: "Open at login",
       launchHint: "Keeps check-ins running in the menu bar",
       reportLanguage: "Report language",
+      language: "Language",
+      languageSystem: "System",
       version: (version) => `Sanka Monitor ${version}`,
       upToDate: (at) => `Up to date · checked ${at}`,
       downloaded: (version) => `Version ${version} is downloaded`,
@@ -1025,6 +1029,8 @@ export const STRINGS: Record<Lang, Strings> = {
       launchAtLogin: "ログイン時に開く",
       launchHint: "メニューバーに常駐してチェックインを続けます",
       reportLanguage: "レポートの言語",
+      language: "言語",
+      languageSystem: "システム",
       version: (version) => `Sanka Monitor ${version}`,
       upToDate: (at) => `最新です · 確認日時：${at}`,
       downloaded: (version) => `バージョン ${version} をダウンロード済み`,
