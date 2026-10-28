@@ -53,7 +53,7 @@ use tauri_plugin_opener::OpenerExt as _;
 use tokio::sync::{Mutex, Notify};
 use uuid::Uuid;
 
-use crate::scan::{collect_device_info, collect_posture, DeviceInfo};
+use crate::scan::{collect_posture, DeviceInfo};
 use crate::usage::{self, UsageRuntime};
 
 // The Cloudflare-fronted public API host — the same canonical origin the
@@ -676,7 +676,7 @@ async fn checkin_once(app: &AppHandle, with_posture: bool) -> Result<CheckinData
         } else {
             Vec::new()
         };
-        (posture, collect_device_info())
+        (posture, crate::scan::device_info())
     })
     .await
     .map_err(|err| err.to_string())?;
@@ -1050,9 +1050,9 @@ pub async fn status_view(app: &AppHandle) -> StatusView {
         }
         None => (false, 0, Vec::new()),
     };
-    let device = tauri::async_runtime::spawn_blocking(collect_device_info)
+    let device = tauri::async_runtime::spawn_blocking(crate::scan::device_info_cached)
         .await
-        .unwrap_or_else(|_| collect_device_info());
+        .unwrap_or_else(|_| crate::scan::device_info_cached());
     let last_update_check_at = *state.last_update_check_at.lock().await;
     let update_check_error = state.update_check_error.lock().await.clone();
     let prefs = tauri::async_runtime::spawn_blocking(crate::enrollment::managed_prefs)

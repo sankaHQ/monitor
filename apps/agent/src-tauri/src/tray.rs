@@ -143,12 +143,14 @@ async fn current(app: &AppHandle) -> View {
             config.enrolled() && config.pending_approval,
         )
     };
+    // The same count as the window: acknowledged risks are not to review.
+    let policy = crate::acks::policy(app).await;
     let risks = state
         .last_scan
         .lock()
         .await
         .as_ref()
-        .map(|scan| scan.findings.len());
+        .map(|scan| crate::acks::open_risks(scan, &policy));
     let update = crate::updates::ready(app).await.map(|info| info.version);
     let look = if paused || removed {
         Look::Paused
