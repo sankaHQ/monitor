@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import lens from "../assets/lens.svg";
 import { type AppContext, workspaceName } from "../context";
 import { formatTime, formatWhen } from "../i18n";
-import type { SaasSettings, ScanView, Severity } from "../types";
+import type { SaasSettings, ScanCheck, ScanView, Severity } from "../types";
 import { Icon, PageTitle, Row } from "../ui";
 
 /// Banners every page can show at the top: an update, a just-installed
@@ -67,8 +67,9 @@ function sortedFindings(scan: ScanView) {
 export function Overview({ ctx }: { ctx: AppContext }) {
   const { s, lang, status, scan, scanning } = ctx;
   const checks = scan?.checks ?? [];
-  const passed = checks.filter((check) => check.pass === true).length;
+  const passed = checks.filter((check) => check.state === "pass").length;
   const findings = scan ? sortedFindings(scan) : [];
+  const attention = new Set(checks.filter((check) => check.state === "attention").map((check) => check.id));
   const nudges = status.lastCheckin?.nudges ?? [];
   const workspace = status.enrolled ? (
     <>
@@ -155,7 +156,9 @@ export function Overview({ ctx }: { ctx: AppContext }) {
                   className="row"
                   onClick={() => ctx.go(finding.check ? `check:${finding.check}` : "risks")}
                 >
-                  <span className="status fail" />
+                  <span
+                    className={`status ${finding.check && attention.has(finding.check) ? "attention" : "fail"}`}
+                  />
                   <span className="text">
                     <b>{finding.title}</b>
                     <span>{finding.fix}</span>
@@ -273,9 +276,8 @@ export function CheckPage({ ctx, id }: { ctx: AppContext; id: string }) {
   if (!scan || !check) {
     return <p className="hint">{s.reports.noScan}</p>;
   }
-  const kind = check.pass === true ? "pass" : check.pass === false ? "fail" : "unknown";
-  const label =
-    check.pass === true ? s.check.passing : check.pass === false ? s.check.failing : s.check.unknown;
+  const kind = check.state;
+  const label = stateLabel(s, check.state);
   return (
     <>
       <PageTitle icon={check.id}>{check.name}</PageTitle>
@@ -301,12 +303,54 @@ export function CheckPage({ ctx, id }: { ctx: AppContext; id: string }) {
         <h3>{s.check.why}</h3>
         <p>{check.why}</p>
       </div>
-      {check.pass === false && check.fix ? (
+      <Acknowledgement ctx={ctx} check={check} />
+      {check.state !== "pass" && check.pass === false && check.fix ? (
         <div className="box fix">
           <h3>{s.check.howToFix}</h3>
           <p>{check.fix}</p>
         </div>
       ) : null}
     </>
+  );
+}
+
+export function stateLabel(s: AppContext["s"], state: ScanCheck["state"]): string {
+  return state === "pass"
+    ? s.check.passing
+    : state === "attention"
+      ? s.check.attention
+      : state === "fail"
+        ? s.check.failing
+        : s.check.unknown;
+}
+
+/// Standard account and Device management: the person can accept the risk.
+/// An administrator account passes for a week once acknowledged; device
+/// management needs attention instead of failing (acks.rs has the rules).
+function Acknowledgement({ ctx, check }: { ctx: AppContext; check: ScanCheck }) {
+  const { s, lang } = ctx;
+  const { ack } = check;
+  const when = (iso: string | null) => formatTime(iso, lang);
+  const admin = check.id === "local_admin";
+  let text: string | null = null;
+  if (check.pass !== false) return null;
+  if (admin) {
+    if (ack.validUntil) text = s.check.ack.adminAccepted(when(ack.acknowledgedAt), when(ack.validUntil));
+    else if (ack.dueAt) text = s.check.ack.adminDue(when(ack.dueAt));
+    else if (ack.canAcknowledge) text = s.check.ack.adminFailing;
+  } else if (check.id === "device_management") {
+    text = ack.acknowledgedAt ? s.check.ack.mdmAccepted(when(ack.acknowledgedAt)) : s.check.ack.mdmOptional;
+  }
+  if (!text) return null;
+  return (
+    <div className={`box ack ${check.state}`}>
+      <h3>{s.check.ack.title}</h3>
+      <p>{text}</p>
+      {ack.canAcknowledge ? (
+        <button className="button" onClick={() => ctx.acknowledgeCheck(check.id)}>
+          {s.check.ack.button}
+        </button>
+      ) : null}
+    </div>
   );
 }

@@ -33,7 +33,7 @@
 //!   Transparency pane like every request. Turning sharing (or the browser
 //!   check) off, Disconnect and a revoke delete what the workspace received.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -176,6 +176,12 @@ pub struct AgentConfig {
     pub last_run_version: Option<String>,
     /// The release notes of the update staged for the next launch.
     pub update_notes: Option<String>,
+    /// When the person accepted a check's risk for themselves, by check id
+    /// (`local_admin`, `device_management`; see acks.rs).
+    pub acknowledged_checks: BTreeMap<String, DateTime<Utc>>,
+    /// When an acknowledgeable check first failed in a row of scans, by check
+    /// id; it starts the week before an unacknowledged admin account fails.
+    pub failing_since: BTreeMap<String, DateTime<Utc>>,
 }
 
 impl AgentConfig {

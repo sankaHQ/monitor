@@ -183,6 +183,18 @@ export type ScanView = {
   };
 };
 
+export type CheckState = "pass" | "attention" | "fail" | "unknown";
+
+/** A check whose risk the person can accept (Standard account, Device management). */
+export type CheckAck = {
+  canAcknowledge: boolean;
+  acknowledgedAt: string | null;
+  /** Passing because it was acknowledged, until then. */
+  validUntil: string | null;
+  /** Needs attention now; fails at this time unless acknowledged. */
+  dueAt: string | null;
+};
+
 export type ScanCheck = {
   id: CheckId;
   /** The short name the sidebar shows. */
@@ -190,6 +202,9 @@ export type ScanCheck = {
   label: string;
   why: string;
   pass: boolean | null;
+  /** After the person's acknowledgement; `pass` stays the check's own result. */
+  state: CheckState;
+  ack: CheckAck;
   resultLabel: string;
   detail: string | null;
   /** For a failed check: its finding's severity and fix. */

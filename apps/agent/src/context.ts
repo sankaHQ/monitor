@@ -32,6 +32,8 @@ export type AppContext = {
   run: (command: string, args?: Record<string, unknown>) => Promise<void>;
   refresh: () => Promise<void>;
   runScan: () => Promise<void>;
+  /** Accepts a check's risk (Standard account, Device management). */
+  acknowledgeCheck: (id: string) => Promise<void>;
   refreshScan: () => void;
   setSaas: (settings: SaasSettings) => void;
   setSaved: (saved: SavedReport[]) => void;

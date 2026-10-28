@@ -389,6 +389,9 @@ pub fn check_detail(detail: &str, lang: Lang) -> String {
     {
         return format!("{count}件の更新が保留中です");
     }
+    if let Some(names) = detail.strip_suffix(" available") {
+        return format!("{names} を利用できます");
+    }
     if let Some(off) = detail.strip_prefix("SIP custom configuration, off: ") {
         return format!("SIP がカスタム構成です（無効：{off}）");
     }
@@ -1108,6 +1111,7 @@ mod tests {
             ("BitLocker is off", "BitLocker がオフです"),
             ("1 update(s) pending", "1件の更新が保留中です"),
             ("12 update(s) pending", "12件の更新が保留中です"),
+            ("macOS 27.2 available", "macOS 27.2 を利用できます"),
             (
                 "SIP custom configuration, off: Filesystem Protections",
                 "SIP がカスタム構成です（無効：Filesystem Protections）",
