@@ -34,7 +34,8 @@
     "createUpdaterArtifacts": true,
     "icon": [
       "icons/icon.png",
-      "icons/icon.icns"
+      "icons/icon.icns",
+      "icons/icon.ico"
     ],
     "macOS": {
       "minimumSystemVersion": "13.0",

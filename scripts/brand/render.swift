@@ -1,11 +1,20 @@
-// Draws Sanka Monitor's brand bitmaps: the Lens app icon (1024 master for
+// Draws Sanka Monitor's brand bitmaps: the Lens app icon (two 1024 masters for
 // `tauri icon`), the menu bar template icons and the DMG background.
 //
 //   swift scripts/brand/render.swift <out-dir>
 //
-// The Lens is an open ring with a center dot, in glossy black on a light pink
-// glass tile (#fcf5f2 → #f1dfd8), in the Liquid Glass style of macOS 26: a
-// sheen across the top, a bright rim, and a lit, shadowed glyph. Template icons are black with alpha only, so macOS tints
+// Then, in apps/agent, run `npx tauri icon` on each master into a scratch
+// directory and keep icon.icns from the glass one and icon.ico and icon.png
+// from the flat one; the DMG background and tray templates are copied as is.
+//
+// The Lens is an open ring with a center dot, in black on a light pink tile.
+// It comes in two designs. On the Mac (icon.icns, the DMG) it is glass:
+// glossy black on a pink glass tile (#fcf5f2 → #f1dfd8), in the Liquid Glass
+// style of macOS 26, with a sheen across the top, a bright rim, and a lit,
+// shadowed glyph (icon-1024-glass.png). Everywhere else (icon.ico, icon.png,
+// the in-app and README logo, the web) it is flat: solid #16151a on a solid
+// #f8ece7 tile, with no sheen, rim, gradients or shadows (icon-1024-flat.png).
+// Template icons are black with alpha only, so macOS tints
 // them for light and dark menu bars; the state shows in the shape: a badge in
 // the ring's gap when something needs attention, a hollow dot when paused.
 
@@ -90,6 +99,7 @@ func lensOutline() -> CGPath {
     return outline
 }
 
+// Glass: the macOS app icon.
 save(bitmap(1024, 1024) { cg in
     let rect = CGRect(x: 100, y: 100, width: 824, height: 824)
     let tile = CGPath(roundedRect: rect, cornerWidth: 185, cornerHeight: 185, transform: nil)
@@ -150,7 +160,19 @@ save(bitmap(1024, 1024) { cg in
     cg.setStrokeColor(rgb(0xffffff, 0.18))
     cg.strokePath()
     cg.restoreGState()
-}, "icon-1024.png")
+}, "icon-1024-glass.png")
+
+// Flat: the same tile and glyph in two solid colors, for Windows, the in-app
+// logo (apps/agent/src/assets/lens.svg), the README and the web.
+save(bitmap(1024, 1024) { cg in
+    cg.addPath(CGPath(roundedRect: CGRect(x: 100, y: 100, width: 824, height: 824),
+                      cornerWidth: 185, cornerHeight: 185, transform: nil))
+    cg.setFillColor(rgb(0xf8ece7))
+    cg.fillPath()
+    cg.addPath(lensOutline())
+    cg.setFillColor(rgb(0x16151a))
+    cg.fillPath()
+}, "icon-1024-flat.png")
 
 // Menu bar templates: 18pt drawn at 2x (36px); the tray shows them 18pt high.
 let black = CGColor(gray: 0, alpha: 1)
