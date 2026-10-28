@@ -185,6 +185,19 @@ export default function App() {
     }
   }, [lang]);
 
+  const acknowledgeCheck = useCallback(
+    async (id: string) => {
+      setError(null);
+      try {
+        await invoke("acknowledge_check", { id });
+        refreshScan();
+      } catch (err) {
+        setError(String(err));
+      }
+    },
+    [refreshScan],
+  );
+
   // The first open scans at once: reading this computer needs no account.
   useEffect(() => {
     if (scanned.current) return;
@@ -252,6 +265,7 @@ export default function App() {
     run,
     refresh,
     runScan,
+    acknowledgeCheck,
     refreshScan,
     setSaas,
     setSaved,

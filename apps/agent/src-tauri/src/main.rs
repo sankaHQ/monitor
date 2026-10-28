@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod account;
+mod acks;
 mod agent;
 mod checks;
 mod cli;
@@ -53,6 +54,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(agent::AgentState::default())
         .invoke_handler(tauri::generate_handler![
+            acks::acknowledge_check,
             agent::get_status,
             agent::enroll,
             agent::set_sharing_consent,

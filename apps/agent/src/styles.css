@@ -170,7 +170,7 @@ summary:focus-visible {
   display: block;
 }
 
-.brand span {
+.brand .name span {
   color: var(--tx2);
   font-weight: 500;
 }
@@ -214,6 +214,9 @@ summary:focus-visible {
 }
 
 .nav-item .label {
+  /* Not the section-heading .label: its bottom margin lifted the text above the icon. */
+  display: block;
+  margin: 0;
   flex: 1;
   min-width: 0;
   white-space: nowrap;
@@ -337,6 +340,14 @@ button.group {
   background: var(--unk);
 }
 
+.status.attention {
+  background: var(--wrn);
+}
+
+.status.attention::after {
+  content: "!";
+}
+
 .status.pass::after {
   content: "";
   width: 5.5px;
@@ -392,6 +403,15 @@ button.group {
 .pill.fail {
   background: var(--bad);
   color: var(--on-acc);
+}
+
+.pill.attention {
+  background: var(--wrn);
+  color: var(--on-acc);
+}
+
+:root:not([data-theme="dark"]) .pill.attention {
+  color: #fff;
 }
 
 .pill.unknown,
@@ -575,6 +595,20 @@ button.group {
   overflow-wrap: anywhere;
 }
 
+/* The AI tag beside a SaaS name, not a second line like the detail span. */
+.row .text b .ai {
+  display: inline-block;
+  vertical-align: 1px;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--acc-m);
+  color: var(--acc);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 16px;
+}
+
 .row .text .fix {
   color: var(--tx);
   margin-top: 5px;
@@ -657,6 +691,10 @@ button.row:hover {
 
 .box.fix p {
   color: var(--tx);
+}
+
+.box.ack .button {
+  margin-top: 10px;
 }
 
 .banner {

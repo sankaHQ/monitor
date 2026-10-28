@@ -156,9 +156,18 @@ export function Icon({ name }: { name: string }) {
   );
 }
 
-/// A check's result: green check, red mark, or gray when the check can't tell.
-export function StatusMark({ pass, label }: { pass: boolean | null; label: string }) {
-  const kind = pass === true ? "pass" : pass === false ? "fail" : "unknown";
+/// A check's result: green check, yellow or red mark, or gray when the check
+/// can't tell. Pass `state` for a security check, `pass` for anything else.
+export function StatusMark({
+  pass,
+  state,
+  label,
+}: {
+  pass?: boolean | null;
+  state?: "pass" | "attention" | "fail" | "unknown";
+  label: string;
+}) {
+  const kind = state ?? (pass === true ? "pass" : pass === false ? "fail" : "unknown");
   return <span className={`status ${kind}`} role="img" aria-label={label} />;
 }
 

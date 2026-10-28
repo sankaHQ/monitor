@@ -148,6 +148,46 @@ pub mod macos {
         Some((count == 0, count))
     }
 
+    /// `defaults read /Library/Preferences/com.apple.SoftwareUpdate` → the
+    /// recommended updates by display name ("macOS 27.2"). macOS 27 dropped
+    /// `LastRecommendedUpdatesAvailable` but keeps this list. Empty when
+    /// Software Update has checked and recommends nothing; `None` when it has
+    /// never checked, so the result can't be told.
+    pub fn parse_recommended_updates(output: &str) -> Option<Vec<String>> {
+        let Some(start) = output.find("RecommendedUpdates =") else {
+            return output.contains("LastSuccessfulDate").then(Vec::new);
+        };
+        let rest = &output[start..];
+        let open = rest.find('(')?;
+        let mut depth = 0usize;
+        let mut end = None;
+        for (i, ch) in rest[open..].char_indices() {
+            match ch {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(open + i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let list = &rest[open..end?];
+        let mut names = Vec::new();
+        for line in list.lines() {
+            let line = line.trim();
+            if let Some(value) = line.strip_prefix("\"Display Name\" =") {
+                let name = value.trim().trim_end_matches(';').trim().trim_matches('"');
+                if !name.is_empty() {
+                    names.push(name.to_string());
+                }
+            }
+        }
+        Some(names)
+    }
+
     /// The Software Update settings that decide whether updates install
     /// without the user. `None` = not set, which means macOS's default (on).
     #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -431,21 +471,33 @@ pub mod macos {
                     collected_at: now,
                 });
 
-                let updates = probe(
-                    "defaults",
-                    &[
-                        "read",
-                        "/Library/Preferences/com.apple.SoftwareUpdate",
-                        "LastRecommendedUpdatesAvailable",
-                    ],
-                );
-                let parsed = updates.as_deref().and_then(parse_pending_updates);
+                // The recommended-updates list first (macOS 27 has no count
+                // key), then the count older macOS versions write.
+                let recommended = probe_ok("defaults", &["read", SOFTWARE_UPDATE])
+                    .as_deref()
+                    .and_then(parse_recommended_updates);
+                let (pass, detail) = match recommended {
+                    Some(names) if names.is_empty() => (Some(true), None),
+                    Some(names) => (Some(false), Some(format!("{} available", names.join(", ")))),
+                    None => {
+                        let count = probe(
+                            "defaults",
+                            &["read", SOFTWARE_UPDATE, "LastRecommendedUpdatesAvailable"],
+                        )
+                        .as_deref()
+                        .and_then(parse_pending_updates);
+                        (
+                            count.map(|(pass, _)| pass),
+                            count.and_then(|(_, count)| {
+                                (count > 0).then(|| format!("{count} update(s) pending"))
+                            }),
+                        )
+                    }
+                };
                 results.push(PostureCheckResult {
                     id: PostureCheckId::OsUpdate,
-                    pass: parsed.map(|(pass, _)| pass),
-                    detail: parsed.and_then(|(_, count)| {
-                        (count > 0).then(|| format!("{count} update(s) pending"))
-                    }),
+                    pass,
+                    detail,
                     collected_at: now,
                 });
 
@@ -626,6 +678,24 @@ pub mod macos {
             assert_eq!(parse_pending_updates("3\n"), Some((false, 3)));
             assert_eq!(
                 parse_pending_updates("The domain/default pair does not exist"),
+                None
+            );
+        }
+
+        #[test]
+        fn recommended_updates_on_macos_27() {
+            // macOS 27.0.1 (26A434): no LastRecommendedUpdatesAvailable key.
+            let offered = "{\n    LastSuccessfulDate = \"2026-10-27 14:05:52 +0000\";\n    RecommendedUpdates =     (\n                {\n            \"Display Name\" = \"macOS 27.2\";\n            \"Display Version\" = \"27.2\";\n            Identifier = \"MSU_UPDATE_26B123_patch_27.2_minor\";\n            MobileSoftwareUpdate = 1;\n        }\n    );\n    SplatEnabled = 1;\n}";
+            assert_eq!(
+                parse_recommended_updates(offered),
+                Some(vec!["macOS 27.2".to_string()])
+            );
+            let none = "{\n    LastSuccessfulDate = \"2026-10-27 14:05:52 +0000\";\n    RecommendedUpdates =     (\n    );\n}";
+            assert_eq!(parse_recommended_updates(none), Some(vec![]));
+            let checked = "{\n    LastSuccessfulDate = \"2026-10-27 14:05:52 +0000\";\n}";
+            assert_eq!(parse_recommended_updates(checked), Some(vec![]));
+            assert_eq!(
+                parse_recommended_updates("{\n    SplatEnabled = 1;\n}"),
                 None
             );
         }

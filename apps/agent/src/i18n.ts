@@ -82,11 +82,21 @@ export type Strings = {
     passing: string;
     failing: string;
     unknown: string;
+    attention: string;
     rerun: string;
     checking: string;
     found: string;
     why: string;
     howToFix: string;
+    ack: {
+      title: string;
+      button: string;
+      adminDue: (due: string) => string;
+      adminFailing: string;
+      adminAccepted: (at: string, until: string) => string;
+      mdmOptional: string;
+      mdmAccepted: (at: string) => string;
+    };
   };
   software: {
     search: (count: number) => string;
@@ -391,11 +401,25 @@ export const STRINGS: Record<Lang, Strings> = {
       passing: "Passing",
       failing: "Failing",
       unknown: "Can't tell",
+      attention: "Needs attention",
       rerun: "Re-run check",
       checking: "Checking…",
       found: "Found",
       why: "Why this matters",
       howToFix: "How to fix",
+      ack: {
+        title: "Your choice",
+        button: "Acknowledge risk",
+        adminDue: (due) =>
+          `You can accept the risk of working as an administrator, a week at a time. Acknowledge it by ${due}, or this check fails.`,
+        adminFailing:
+          "Acknowledge the risk to keep working as an administrator for another week, or switch to a standard account.",
+        adminAccepted: (at, until) =>
+          `You accepted this risk on ${at}. It needs your acknowledgement again on ${until}.`,
+        mdmOptional:
+          "Device management is optional. If this computer doesn't need it, acknowledge the risk and this check shows as needing attention instead of failing.",
+        mdmAccepted: (at) => `You acknowledged on ${at} that this computer isn't managed.`,
+      },
     },
     software: {
       search: (count) => `Search ${count} programs`,
@@ -732,11 +756,24 @@ export const STRINGS: Record<Lang, Strings> = {
       passing: "合格",
       failing: "不合格",
       unknown: "判定できません",
+      attention: "要対応",
       rerun: "もう一度チェック",
       checking: "チェック中…",
       found: "検出内容",
       why: "このチェックが必要な理由",
       howToFix: "対応方法",
+      ack: {
+        title: "あなたの判断",
+        button: "リスクを承認する",
+        adminDue: (due) =>
+          `管理者アカウントで作業するリスクは、1週間ずつ承認できます。${due}までに承認しないと、このチェックは不合格になります。`,
+        adminFailing:
+          "管理者アカウントでの作業を続ける場合は、リスクを承認してください（1週間有効）。または標準アカウントに切り替えてください。",
+        adminAccepted: (at, until) => `${at}にこのリスクを承認しました。${until}に再度の承認が必要です。`,
+        mdmOptional:
+          "デバイス管理（MDM）は任意です。このコンピューターに必要ない場合はリスクを承認すると、このチェックは不合格ではなく要対応と表示されます。",
+        mdmAccepted: (at) => `${at}に、このコンピューターがデバイス管理されていないことを承認しました。`,
+      },
     },
     software: {
       search: (count) => `${count}件のソフトウェアを検索`,

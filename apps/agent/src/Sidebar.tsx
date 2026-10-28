@@ -1,6 +1,7 @@
 import { useState } from "react";
 import lens from "./assets/lens.svg";
 import type { AppContext, Screen } from "./context";
+import { stateLabel } from "./pages/Overview";
 import { Icon, StatusMark } from "./ui";
 
 /// The sidebar: the Lens and the name, then Overview and Risks, one item per
@@ -11,7 +12,7 @@ export function Sidebar({ ctx, screen }: { ctx: AppContext; screen: Screen }) {
   const { s, scan, status } = ctx;
   const [checksOpen, setChecksOpen] = useState(true);
   const checks = scan?.checks ?? [];
-  const passed = checks.filter((check) => check.pass === true).length;
+  const passed = checks.filter((check) => check.state === "pass").length;
   const risks = scan?.findings.length ?? 0;
   const workspaceDot = status.enrolled
     ? status.pendingApproval || status.paused
@@ -40,7 +41,9 @@ export function Sidebar({ ctx, screen }: { ctx: AppContext; screen: Screen }) {
     <aside className="side">
       <div className="brand">
         <img src={lens} alt="" />
-        Sanka <span>{s.appWord}</span>
+        <span className="name">
+          Sanka <span>{s.appWord}</span>
+        </span>
       </div>
       <nav className="nav" aria-label={s.appName}>
         {item("overview", s.nav.overview, "overview")}
@@ -71,16 +74,7 @@ export function Sidebar({ ctx, screen }: { ctx: AppContext; screen: Screen }) {
                     `check:${check.id}`,
                     check.name,
                     check.id,
-                    <StatusMark
-                      pass={check.pass}
-                      label={
-                        check.pass === true
-                          ? s.check.passing
-                          : check.pass === false
-                            ? s.check.failing
-                            : s.check.unknown
-                      }
-                    />,
+                    <StatusMark state={check.state} label={stateLabel(s, check.state)} />,
                   ),
                 )
               : null}

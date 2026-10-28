@@ -52,7 +52,11 @@ pub struct CheckView {
     pub label: &'static str,
     pub why: &'static str,
     pub pass: Option<bool>,
+    /// After the person's acknowledgement (acks.rs): pass, attention, fail or
+    /// unknown. `pass` stays the check's own result.
+    pub state: crate::acks::CheckState,
     pub result_label: &'static str,
+    pub ack: crate::acks::AckView,
     pub detail: Option<String>,
     /// For a failed check: its finding's severity and fix.
     pub severity: Option<Severity>,
@@ -130,7 +134,23 @@ pub struct ScanView {
     pub saas_check: SaasCheckView,
 }
 
-pub fn scan_view(report: &ScanReport, lang: Lang) -> ScanView {
+pub fn scan_view(report: &ScanReport, lang: Lang, policy: &crate::acks::Policy) -> ScanView {
+    // A check passing because the person acknowledged it is no longer a risk.
+    let mut report = report.clone();
+    let accepted: Vec<_> = report
+        .checks
+        .iter()
+        .filter(|check| {
+            check.pass == Some(false)
+                && crate::acks::evaluate(check.id, check.pass, policy).0
+                    == crate::acks::CheckState::Pass
+        })
+        .map(|check| check.id)
+        .collect();
+    report
+        .findings
+        .retain(|finding| finding.check.is_none_or(|id| !accepted.contains(&id)));
+    let report = &report;
     let platform = report.device.platform.as_str();
     ScanView {
         lang,
@@ -144,7 +164,12 @@ pub fn scan_view(report: &ScanReport, lang: Lang) -> ScanView {
             label: copy::lifecycle_status(os.status, lang),
             support_ends_on: os.support_ends_on.clone(),
         }),
-        counts: report.counts(),
+        counts: {
+            let mut counts = report.counts();
+            counts.checks_passed += accepted.len();
+            counts.checks_failed -= accepted.len();
+            counts
+        },
         findings: report
             .findings
             .iter()
@@ -163,13 +188,16 @@ pub fn scan_view(report: &ScanReport, lang: Lang) -> ScanView {
             .iter()
             .map(|check| {
                 let finding = report.findings.iter().find(|f| f.check == Some(check.id));
+                let (state, ack) = crate::acks::evaluate(check.id, check.pass, policy);
                 CheckView {
                     id: check.id,
                     name: copy::check_name(check.id, platform, lang),
                     label: copy::check_label(check.id, platform, lang),
                     why: copy::check_why(check.id, platform, lang),
                     pass: check.pass,
+                    state,
                     result_label: copy::check_result(check.pass, lang),
+                    ack,
                     detail: check
                         .detail
                         .as_deref()
@@ -248,7 +276,8 @@ pub async fn scan_device(app: AppHandle, lang: Lang) -> Result<ScanView, String>
     let _one_scan = state.scan_lock.lock().await;
     let report = crate::checks::scan_now(&app).await?;
     crate::checks::record_scan(&app, &report).await;
-    let view = scan_view(&report, lang);
+    crate::acks::note_scan(&app, &report).await;
+    let view = scan_view(&report, lang, &crate::acks::policy(&app).await);
     *state.last_scan.lock().await = Some(report);
     crate::agent::spawn_saas_sync(&app);
     crate::tray::refresh(&app).await;
@@ -263,6 +292,7 @@ pub async fn scan_in_background(app: &AppHandle) -> Result<(), String> {
         let _one_scan = state.scan_lock.lock().await;
         let report = crate::checks::scan_now(app).await?;
         crate::checks::record_scan(app, &report).await;
+        crate::acks::note_scan(app, &report).await;
         *state.last_scan.lock().await = Some(report);
     }
     crate::agent::spawn_saas_sync(app);
@@ -274,9 +304,12 @@ pub async fn scan_in_background(app: &AppHandle) -> Result<(), String> {
 /// The latest scan of this session in `lang`, if there is one.
 #[tauri::command]
 pub async fn get_scan(app: AppHandle, lang: Lang) -> Option<ScanView> {
+    let policy = crate::acks::policy(&app).await;
     let state: State<'_, AgentState> = app.state();
     let report = state.last_scan.lock().await;
-    report.as_ref().map(|report| scan_view(report, lang))
+    report
+        .as_ref()
+        .map(|report| scan_view(report, lang, &policy))
 }
 
 fn parse_format(format: &str) -> Result<Format, String> {
