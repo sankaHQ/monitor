@@ -59,7 +59,7 @@ an optional console for IT at [monitor.sanka.com](https://monitor.sanka.com).
    installer (no admin rights needed).
 3. **Open it.** The scan starts at once. Review the risks on **Overview**, open any
    security check for why it matters and how to fix it, and use **Reports** to save
-   the Excel ledger or send the scan to Sanka for a review.
+   the Excel ledger or send the scan to Sanka for an automated analysis.
 
 The app updates itself: a new version downloads in the background and installs
 the next time the app restarts. You can turn the update check off under Privacy.
@@ -127,8 +127,9 @@ Sanka Monitor is local-first:
   `POST /api/v2/monitor/desktop/reports` with a one-hour token. Sanka's receipt
   carries hashes of both the workbook and observations to compare. The preview
   explains that account creation and submission are free. Sanka processes the private
-  submission before an internal reviewer approves a minimized result for the sender
-  and assigned representative; there is no upload-time sales notification. The result
+  submission and automatically shares a minimized result with the sender
+  and assigned representative; no manual approval is needed and there is no upload-time
+  sales notification. The result
   page is linked from the receipt. The sign-in, each one-hour token request,
   each sent report and sign-out appear in the Privacy pane, with the code, the
   verifier and the device secret hidden. Scanning and local export need no account.
