@@ -3,8 +3,9 @@
 //
 //   swift scripts/brand/render.swift <out-dir>
 //
-// The Lens is an open ring with a center dot on a violet tile (Sanka violet
-// #472cf5 → #3a20d8). Template icons are black with alpha only, so macOS tints
+// The Lens is an open ring with a center dot, in glossy black on a light pink
+// glass tile (#fcf5f2 → #f1dfd8), in the Liquid Glass style of macOS 26: a
+// sheen across the top, a bright rim, and a lit, shadowed glyph. Template icons are black with alpha only, so macOS tints
 // them for light and dark menu bars; the state shows in the shape: a badge in
 // the ring's gap when something needs attention, a hollow dot when paused.
 
@@ -35,10 +36,6 @@ func save(_ rep: NSBitmapImageRep, _ name: String, dpi: CGFloat = 72) {
     try! data.write(to: out.appendingPathComponent(name))
     print(name)
 }
-
-let violet = CGColor(srgbRed: 0x47 / 255, green: 0x2c / 255, blue: 0xf5 / 255, alpha: 1)
-let violetTop = CGColor(srgbRed: 0x5a / 255, green: 0x40 / 255, blue: 0xff / 255, alpha: 1)
-let violetDeep = CGColor(srgbRed: 0x3a / 255, green: 0x20 / 255, blue: 0xd8 / 255, alpha: 1)
 
 /// The ring: an arc from the gap at the upper right, around, back to the right.
 /// Geometry in a 1024 box (center 512, radius 240); `scale` maps it to the target.
@@ -74,24 +71,85 @@ func lens(_ cg: CGContext, scale: CGFloat, origin: CGPoint, color: CGColor, ring
 }
 
 // App icon, 1024 master on the macOS icon grid (an 824 tile with 100 margins).
+let sRGB = CGColorSpace(name: CGColorSpace.sRGB)!
+func rgb(_ hex: Int, _ alpha: CGFloat = 1) -> CGColor {
+    CGColor(srgbRed: CGFloat(hex >> 16 & 0xff) / 255, green: CGFloat(hex >> 8 & 0xff) / 255,
+            blue: CGFloat(hex & 0xff) / 255, alpha: alpha)
+}
+func gradient(_ colors: [CGColor], _ locations: [CGFloat]) -> CGGradient {
+    CGGradient(colorsSpace: sRGB, colors: colors as CFArray, locations: locations)!
+}
+
+/// The Lens glyph as one filled outline (ring and dot), in the 1024 box.
+func lensOutline() -> CGPath {
+    let ring = CGMutablePath()
+    ring.addArc(center: CGPoint(x: 512, y: 512), radius: 240, startAngle: -.pi / 4, endAngle: 0, clockwise: true)
+    let outline = CGMutablePath()
+    outline.addPath(ring.copy(strokingWithWidth: 76, lineCap: .round, lineJoin: .round, miterLimit: 10))
+    outline.addEllipse(in: CGRect(x: 512 - 80, y: 512 - 80, width: 160, height: 160))
+    return outline
+}
+
 save(bitmap(1024, 1024) { cg in
-    let tile = CGPath(roundedRect: CGRect(x: 100, y: 100, width: 824, height: 824),
-                      cornerWidth: 185, cornerHeight: 185, transform: nil)
+    let rect = CGRect(x: 100, y: 100, width: 824, height: 824)
+    let tile = CGPath(roundedRect: rect, cornerWidth: 185, cornerHeight: 185, transform: nil)
+    // Drop shadow under the tile.
     cg.saveGState()
-    cg.setShadow(offset: CGSize(width: 0, height: 10), blur: 28,
-                 color: CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.28))
+    cg.setShadow(offset: CGSize(width: 0, height: 12), blur: 30, color: rgb(0x3a2620, 0.22))
     cg.addPath(tile)
-    cg.setFillColor(violet)
+    cg.setFillColor(rgb(0xf8efeb))
     cg.fillPath()
     cg.restoreGState()
+
     cg.saveGState()
     cg.addPath(tile)
     cg.clip()
-    let gradient = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB),
-                              colors: [violetTop, violetDeep] as CFArray, locations: [0, 1])!
-    cg.drawLinearGradient(gradient, start: CGPoint(x: 100, y: 100), end: CGPoint(x: 924, y: 924), options: [])
+    // Pink body, lighter at the top.
+    cg.drawLinearGradient(gradient([rgb(0xfcf5f2), rgb(0xf8ece7), rgb(0xf1dfd8)], [0, 0.55, 1]),
+                          start: CGPoint(x: 512, y: 100), end: CGPoint(x: 512, y: 924), options: [])
+    // Sheen: a soft white bloom across the upper half.
+    cg.drawRadialGradient(gradient([rgb(0xffffff, 0.6), rgb(0xffffff, 0)], [0, 1]),
+                          startCenter: CGPoint(x: 512, y: 150), startRadius: 0,
+                          endCenter: CGPoint(x: 512, y: 150), endRadius: 520, options: [])
+    // Warm glow pooling at the bottom, as light through tinted glass.
+    cg.drawRadialGradient(gradient([rgb(0xefd6ce, 0.55), rgb(0xefd6ce, 0)], [0, 1]),
+                          startCenter: CGPoint(x: 512, y: 960), startRadius: 0,
+                          endCenter: CGPoint(x: 512, y: 960), endRadius: 460, options: [])
+    // Rim: bright along the top edge, a faint darker line along the bottom.
+    cg.addPath(tile)
+    cg.setLineWidth(10)
+    cg.replacePathWithStrokedPath()
+    cg.clip()
+    cg.drawLinearGradient(gradient([rgb(0xffffff, 1), rgb(0xffffff, 0.15), rgb(0xc9a89e, 0.35)], [0, 0.5, 1]),
+                          start: CGPoint(x: 512, y: 100), end: CGPoint(x: 512, y: 924), options: [])
     cg.restoreGState()
-    lens(cg, scale: 1, origin: .zero, color: CGColor(gray: 1, alpha: 1), ring: 72, dot: 78)
+
+    let glyph = lensOutline()
+    // The glyph's shadow on the glass.
+    cg.saveGState()
+    cg.setShadow(offset: CGSize(width: 0, height: 18), blur: 34, color: rgb(0x2a1a14, 0.30))
+    cg.addPath(glyph)
+    cg.setFillColor(rgb(0x16151a))
+    cg.fillPath()
+    cg.restoreGState()
+    // Glossy black: a gradient body, a lit upper edge, a specular streak.
+    cg.saveGState()
+    cg.addPath(glyph)
+    cg.clip()
+    cg.drawLinearGradient(gradient([rgb(0x3a3840), rgb(0x16151a), rgb(0x050506)], [0, 0.5, 1]),
+                          start: CGPoint(x: 512, y: 236), end: CGPoint(x: 512, y: 788), options: [])
+    cg.drawRadialGradient(gradient([rgb(0xffffff, 0.42), rgb(0xffffff, 0)], [0, 1]),
+                          startCenter: CGPoint(x: 430, y: 300), startRadius: 0,
+                          endCenter: CGPoint(x: 430, y: 300), endRadius: 230, options: [])
+    cg.drawRadialGradient(gradient([rgb(0xffffff, 0.38), rgb(0xffffff, 0)], [0, 1]),
+                          startCenter: CGPoint(x: 490, y: 470), startRadius: 0,
+                          endCenter: CGPoint(x: 490, y: 470), endRadius: 70, options: [])
+    // Inner edge light: the outline offset down shows a thin bright line on top.
+    cg.addPath(glyph)
+    cg.setLineWidth(6)
+    cg.setStrokeColor(rgb(0xffffff, 0.18))
+    cg.strokePath()
+    cg.restoreGState()
 }, "icon-1024.png")
 
 // Menu bar templates: 18pt drawn at 2x (36px); the tray shows them 18pt high.
@@ -123,7 +181,7 @@ save(bitmap(1280, 800) { cg in
         y += 20
     }
     // Arrow between the two icons.
-    cg.setStrokeColor(violet)
+    cg.setStrokeColor(rgb(0x16151a, 0.55))
     cg.setLineWidth(2.5)
     cg.setLineCap(.round)
     cg.setLineJoin(.round)
