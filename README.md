@@ -311,7 +311,7 @@ ruleset for `v*` in the repository settings.
 The bucket is public, with `release.sanka.com` set as its custom domain and a CNAME from
 `release.sanka.com` to `<bucket>.t3.tigrisbucket.io`. The S3 endpoint defaults to
 `https://t3.storage.dev`; set the repository variable `MONITOR_CDN_ENDPOINT` to use another.
-| `MONITOR_RELEASES_TOKEN` | Only for `bridge_to_monitor_releases` (see below) |
+| `MONITOR_RELEASE_APP_CLIENT_ID`, `MONITOR_RELEASE_APP_PRIVATE_KEY` | Only for `bridge_to_monitor_releases` (see below): the Sanka Release Bot GitHub App, installed on `sankaHQ/monitor-releases` with Contents read and write, so the bridge release isn't published under a person's name |
 
 A dry run (the default) builds, signs and notarizes everything and uploads the release
 files to the workflow run as the artifact `sanka-monitor-vX.Y.Z`. Publishing is the
@@ -324,7 +324,7 @@ gh workflow run release.yml --repo sankaHQ/monitor -f version=vX.Y.Z -f dry_run=
 
 **Moving from sankaHQ/monitor-releases (0.4.0).** Agents up to 0.3.x read
 `latest.json` from `sankaHQ/monitor-releases`. Release 0.4.0 with
-`bridge_to_monitor_releases=true` (needs `MONITOR_RELEASES_TOKEN`) to publish it there
+`bridge_to_monitor_releases=true` (needs the Sanka Release Bot secrets) to publish it there
 one last time; those agents update to 0.4.0, which reads the new feed. Archive
 `monitor-releases` once its last `latest.json` download count levels off and connected
 devices report 0.4.0 or later. Archived repositories keep serving release files, so

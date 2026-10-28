@@ -67,7 +67,8 @@ jobs:
       MONITOR_CDN_ACCESS_KEY_ID: ${{ secrets.MONITOR_CDN_ACCESS_KEY_ID }}
       MONITOR_CDN_SECRET_ACCESS_KEY: ${{ secrets.MONITOR_CDN_SECRET_ACCESS_KEY }}
       MONITOR_CDN_BUCKET: ${{ secrets.MONITOR_CDN_BUCKET }}
-      MONITOR_RELEASES_TOKEN: ${{ secrets.MONITOR_RELEASES_TOKEN }}
+      MONITOR_RELEASE_APP_CLIENT_ID: ${{ secrets.MONITOR_RELEASE_APP_CLIENT_ID }}
+      MONITOR_RELEASE_APP_PRIVATE_KEY: ${{ secrets.MONITOR_RELEASE_APP_PRIVATE_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -132,8 +133,8 @@ jobs:
             require "uploading to release.sanka.com" \
               MONITOR_CDN_ACCESS_KEY_ID MONITOR_CDN_SECRET_ACCESS_KEY MONITOR_CDN_BUCKET
             if [ "$BRIDGE" = "true" ]; then
-              require "the bridge release in sankaHQ/monitor-releases (fine-grained PAT, contents:write)" \
-                MONITOR_RELEASES_TOKEN
+              require "the bridge release in sankaHQ/monitor-releases (the Sanka Release Bot app, contents:write)" \
+                MONITOR_RELEASE_APP_CLIENT_ID MONITOR_RELEASE_APP_PRIVATE_KEY
             fi
           fi
           if [ "$missing" -ne 0 ]; then
@@ -581,10 +582,23 @@ jobs:
             --latest out/release/* out/latest.json
           gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name'
 
+      # The bridge release is published by the Sanka Release Bot app, not a person's
+      # token, so it shows the bot as its author (the release here shows
+      # github-actions). The token is scoped to monitor-releases and revoked after the job.
+      - name: Get a Sanka Release Bot token for monitor-releases
+        id: release-bot
+        if: ${{ !inputs.dry_run && inputs.bridge_to_monitor_releases }}
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.MONITOR_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.MONITOR_RELEASE_APP_PRIVATE_KEY }}
+          owner: sankaHQ
+          repositories: monitor-releases
+
       - name: Publish the bridge release to sankaHQ/monitor-releases
         if: ${{ !inputs.dry_run && inputs.bridge_to_monitor_releases }}
         env:
-          GH_TOKEN: ${{ secrets.MONITOR_RELEASES_TOKEN }}
+          GH_TOKEN: ${{ steps.release-bot.outputs.token }}
           RELEASE_TAG: ${{ inputs.version }}
           RELEASE_NOTES: ${{ inputs.release_notes }}
         run: |
