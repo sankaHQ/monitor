@@ -163,6 +163,10 @@ export type Strings = {
     signingIn: string;
     signOut: string;
     whatIsSent: string;
+    whySend: string;
+    learnMore: string;
+    observations: string;
+    viewReview: string;
     device: string;
     risks: string;
     riskCounts: (high: number, medium: number, low: number) => string;
@@ -466,7 +470,7 @@ export const STRINGS: Record<Lang, Strings> = {
     reports: {
       send: "Send to Sanka",
       sendThis: "Send this scan",
-      sendHint: "Sign in once in your browser. You see what's sent first.",
+      sendHint: "Ask Sanka to review your findings. Sending and your account are free.",
       signedInAs: (who, company) => `Signed in as ${who}${company ? ` · ${company}` : ""}`,
       sendButton: "Send to Sanka…",
       save: "Save a report",
@@ -480,7 +484,7 @@ export const STRINGS: Record<Lang, Strings> = {
       saving: "Saving…",
       saved: "Saved on this computer",
       showInFolder: "Show in folder",
-      emailInstead: "Prefer not to sign in? Save the Excel and email it to your Sanka contact.",
+      emailInstead: "Prefer to keep everything local? Save a report. Sending is optional.",
       noScan: "Scan this computer first.",
     },
     send: {
@@ -495,6 +499,10 @@ export const STRINGS: Record<Lang, Strings> = {
       signingIn: "Signing in…",
       signOut: "Sign out",
       whatIsSent: "This is what Sanka receives, with the app version and the report ID:",
+      whySend: "Ask Sanka to help prioritize fixes and identify what needs a closer review. Some issues need a simple update; others may benefit from a platform, workflow or code assessment. There is no obligation to buy.",
+      learnMore: "Why send a report?",
+      observations: "Scan observations sent for internal review (JSON)",
+      viewReview: "View review status and result",
       device: "Device",
       risks: "Risks",
       riskCounts: (high, medium, low) => `${high} high · ${medium} medium · ${low} low`,
@@ -510,18 +518,18 @@ export const STRINGS: Record<Lang, Strings> = {
       fingerprint: "SHA-256",
       edited: "An edited workbook: sent byte for byte as you saved it, without counts.",
       explain:
-        "Nothing else from this computer is sent. Only Sanka staff can open the report, and it's used for the assessment you ask for, never for outreach to other companies.",
+        "Your free Sanka account identifies you and your company. Sanka stores the original report for restricted internal processing and review. Only a reviewed, minimized result goes to the relevant Sanka team; the raw report and private notes do not go directly to sales. Sending does not enable ongoing collection.",
       note: "Note (optional)",
       send: "Send",
       sending: "Sending…",
       tryAgain: "Try again",
       sendEdited: "Send an edited workbook…",
       useScan: "Send this scan instead",
-      received: "Received by Sanka",
+      received: "Received by Sanka for internal review",
       receivedDetail: (fileName, size, at) => `${fileName} · ${size} · ${at}`,
       matches: "The SHA-256 matches what this computer sent.",
       mismatch: (sha256) =>
-        `Sanka's SHA-256 (${sha256}) doesn't match the report shown. Send it again, or email the saved Excel to your Sanka contact.`,
+        `Sanka's SHA-256 (${sha256}) does not confirm all the material shown. Check the connection and try again.`,
       receipt: (id) => `Receipt ${id}`,
       done: "Done",
     },
@@ -820,7 +828,7 @@ export const STRINGS: Record<Lang, Strings> = {
     reports: {
       send: "Sankaに送信",
       sendThis: "このスキャンを送信",
-      sendHint: "ブラウザーで一度サインインします。送信前に内容を確認できます。",
+      sendHint: "Sankaに確認を依頼できます。アカウントも送信も無料です。",
       signedInAs: (who, company) => `${who}${company ? `（${company}）` : ""}としてサインイン中`,
       sendButton: "Sankaに送信…",
       save: "レポートを保存",
@@ -834,7 +842,7 @@ export const STRINGS: Record<Lang, Strings> = {
       saving: "保存中…",
       saved: "このPCに保存したレポート",
       showInFolder: "フォルダーで表示",
-      emailInstead: "サインインしたくない場合は、Excelを保存してSankaの担当者にメールで送ってください。",
+      emailInstead: "このPC内だけに保存する場合は、レポートを保存してください。送信は任意です。",
       noScan: "先にこのPCをスキャンしてください。",
     },
     send: {
@@ -850,6 +858,10 @@ export const STRINGS: Record<Lang, Strings> = {
       signingIn: "サインイン中…",
       signOut: "サインアウト",
       whatIsSent: "Sankaが受け取るのは、次の内容と、アプリのバージョン、レポートのIDです。",
+      whySend: "修正の優先順位と、追加確認が必要な点をSankaに相談できます。更新だけで対応できる場合も、システム移行、ワークフローやコードの確認が役立つ場合もあります。購入の義務はありません。",
+      learnMore: "レポートを送信する理由",
+      observations: "社内確認に送信するスキャン結果（JSON）",
+      viewReview: "確認状況と結果を見る",
       device: "デバイス",
       risks: "リスク",
       riskCounts: (high, medium, low) => `高 ${high}・中 ${medium}・低 ${low}`,
@@ -865,18 +877,18 @@ export const STRINGS: Record<Lang, Strings> = {
       fingerprint: "SHA-256",
       edited: "編集したブックです。保存した内容のまま送信し、件数は送りません。",
       explain:
-        "このPCのそれ以外の情報は送信しません。レポートを開けるのはSankaの社員だけで、ご依頼いただいたアセスメントのためだけに使い、他社への営業には使いません。",
+        "無料のSankaアカウントで送信者と会社を確認します。元のレポートは、権限を持つ社内担当者だけが処理・確認します。営業担当者には、確認済みの必要最小限の要約だけを共有し、元のレポートやメモを直接渡しません。送信しても継続的な収集は有効になりません。",
       note: "メモ（任意）",
       send: "送信",
       sending: "送信中…",
       tryAgain: "もう一度送信",
       sendEdited: "編集したブックを送る…",
       useScan: "このスキャンを送る",
-      received: "Sankaが受け取りました",
+      received: "Sankaが社内確認用に受け取りました",
       receivedDetail: (fileName, size, at) => `${fileName} · ${size} · ${at}`,
       matches: "SHA-256は、このPCが送信した内容と一致しています。",
       mismatch: (sha256) =>
-        `Sankaが記録したSHA-256（${sha256}）が、表示したレポートと一致しません。もう一度送信するか、保存したExcelをSankaの担当者にメールで送ってください。`,
+        `Sankaが記録したSHA-256（${sha256}）が、表示した送信内容と一致しません。接続を確認して、もう一度送信してください。`,
       receipt: (id) => `受付番号 ${id}`,
       done: "閉じる",
     },

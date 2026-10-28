@@ -121,12 +121,20 @@ Sanka Monitor is local-first:
   workbook, shows what will be sent (device, risk counts, program counts,
   file name, size and SHA-256; the file is sent as
   `sanka-monitor-report_<date-time>.xlsx`, never under the computer's name) and
-  sends those bytes and counts, the app version and, for a scan, its report ID to
+  sends those frozen bytes and counts, the app version and, for a scan, its report ID
+  and versioned raw observations (OS, measured checks, acknowledgements, installed
+  software and service catalog keys) to
   `POST /api/v2/monitor/desktop/reports` with a one-hour token. Sanka's receipt
-  carries its own SHA-256 to compare. The sign-in, each one-hour token request,
+  carries hashes of both the workbook and observations to compare. The preview
+  explains that account creation and submission are free. Sanka processes the private
+  submission before an internal reviewer approves a minimized result for the sender
+  and assigned representative; there is no upload-time sales notification. The result
+  page is linked from the receipt. The sign-in, each one-hour token request,
   each sent report and sign-out appear in the Privacy pane, with the code, the
-  verifier and the device secret hidden. Without an account, the person emails the
-  saved Excel instead.
+  verifier and the device secret hidden. Scanning and local export need no account.
+  Edited workbooks have no canonical observations and their automated coverage stays
+  unknown. The structured observations omit host/serial and individual use history;
+  the original workbook can still contain identifiers, so inspect it before sending.
 - **The SaaS the computer uses.** Each scan maps installed desktop apps (Slack,
   Zoom, ChatGPT, …) to their SaaS in the catalog bundled in the app
   (`crates/monitor-saas/catalog/saas.json`: product, vendor, category, AI flag, web

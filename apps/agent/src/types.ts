@@ -310,6 +310,8 @@ export type SendPreview = {
   format: string;
   sizeBytes: number;
   sha256: string;
+  evidence: Record<string, unknown> | null;
+  evidenceSha256: string | null;
   /** The scan the report was built from; null for an edited workbook. */
   scan: {
     hostname: string;
@@ -333,6 +335,7 @@ export type SendResult = {
     fileName: string;
     sizeBytes: number;
     sha256: string;
+    evidenceSha256?: string | null;
   };
   matches: boolean;
 };

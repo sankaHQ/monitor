@@ -187,6 +187,10 @@ export function SendSheet({ ctx, onClose }: { ctx: AppContext; onClose: () => vo
           <div className="text">{result.matches ? t.matches : t.mismatch(result.receipt.sha256)}</div>
         </div>
         <p>{t.receipt(result.receipt.id)}</p>
+        <button className="link accent" onClick={() => invoke("open_report_result", { reportId: result.receipt.id }).catch((err) => setError(String(err)))}>
+          {t.viewReview}
+        </button>
+        {error ? <p className="error">{error}</p> : null}
         <div className="actions">
           <button className="button primary" onClick={onClose}>
             {t.done}
@@ -198,6 +202,8 @@ export function SendSheet({ ctx, onClose }: { ctx: AppContext; onClose: () => vo
     body = (
       <>
         <h2>{t.title}</h2>
+        <p>{t.whySend}</p>
+        <button className="link accent" onClick={() => invoke("open_report_help").catch((err) => setError(String(err)))}>{t.learnMore}</button>
         <h3 className="label" style={{ margin: "12px 0 4px" }}>
           {t.signInTitle}
         </h3>
@@ -249,6 +255,7 @@ export function SendSheet({ ctx, onClose }: { ctx: AppContext; onClose: () => vo
     body = (
       <>
         <h2>{t.title}</h2>
+        <p>{t.whySend}</p>
         <p>
           {s.reports.signedInAs(who, account?.workspaceName ?? null)}{" "}
           <button className="link accent" onClick={() => accountCommand("sign_out")} disabled={busy || sending}>
@@ -288,6 +295,13 @@ export function SendSheet({ ctx, onClose }: { ctx: AppContext; onClose: () => vo
               <dt>{t.fingerprint}</dt>
               <dd className="mono">{preview.sha256}</dd>
             </dl>
+            {preview.evidence ? (
+              <details className="more">
+                <summary>{t.observations}</summary>
+                <p className="mono">SHA-256: {preview.evidenceSha256}</p>
+                <pre>{JSON.stringify(preview.evidence, null, 2)}</pre>
+              </details>
+            ) : null}
             {preview.scan ? null : <p>{t.edited}</p>}
             <p>{t.explain}</p>
             <label className="field">

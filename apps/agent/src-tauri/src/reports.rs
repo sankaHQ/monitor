@@ -443,6 +443,7 @@ pub struct PendingUpload {
     sha256: String,
     report_id: Option<String>,
     summary: Option<ReportSummary>,
+    evidence: Option<String>,
 }
 
 /// The scan a report was built from, as the preview shows it.
@@ -473,6 +474,8 @@ pub struct SendPreview {
     pub format: &'static str,
     pub size_bytes: u64,
     pub sha256: String,
+    pub evidence: Option<serde_json::Value>,
+    pub evidence_sha256: Option<String>,
     /// `None` for an edited workbook: its contents are the person's.
     pub scan: Option<SendScan>,
 }
@@ -525,6 +528,14 @@ async fn keep_pending(
         format: Format::Xlsx.extension(),
         size_bytes: pending.content.len() as u64,
         sha256: pending.sha256.clone(),
+        evidence: pending
+            .evidence
+            .as_deref()
+            .map(|text| serde_json::from_str(text).expect("prepared observations are JSON")),
+        evidence_sha256: pending
+            .evidence
+            .as_ref()
+            .map(|text| sha256_hex(text.as_bytes())),
         scan,
     };
     *state.pending_upload.lock().await = Some(pending);
@@ -544,6 +555,26 @@ pub async fn prepare_send(app: AppHandle, lang: Lang) -> Result<SendPreview, Str
         .ok_or("scan this computer first")?;
     let content = cli::encode(&report, Format::Xlsx, lang)?;
     let summary = report_summary(&report);
+    let policy = crate::acks::policy(&app).await;
+    let accepted = report
+        .checks
+        .iter()
+        .filter(|check| {
+            let (state, ack) = crate::acks::evaluate(check.id, check.pass, &policy);
+            check.pass == Some(false)
+                && (state == crate::acks::CheckState::Pass
+                    || (check.id == monitor_posture::PostureCheckId::DeviceManagement
+                        && ack.acknowledged_at.is_some()))
+        })
+        .map(|check| check.id)
+        .collect::<Vec<_>>();
+    let evidence = serde_json::to_string(&monitor_report::evidence::review_evidence(
+        &report, &accepted,
+    ))
+    .map_err(|err| err.to_string())?;
+    if evidence.len() > 1_000_000 {
+        return Err("The scan observations exceed the 1 MB submission limit. Save the report locally instead.".into());
+    }
     let pending = PendingUpload {
         token: uuid::Uuid::new_v4().to_string(),
         file_name: sent_file_name(report.scanned_at),
@@ -551,6 +582,7 @@ pub async fn prepare_send(app: AppHandle, lang: Lang) -> Result<SendPreview, Str
         content,
         report_id: Some(report.report_id.clone()),
         summary: Some(summary),
+        evidence: Some(evidence),
     };
     let counts = report.counts();
     let scan = SendScan {
@@ -610,6 +642,7 @@ pub async fn prepare_edited_excel(app: AppHandle) -> Result<Option<SendPreview>,
         content,
         report_id: None,
         summary: None,
+        evidence: None,
     };
     Ok(Some(keep_pending(&state, pending, None).await))
 }
@@ -641,6 +674,8 @@ pub async fn send_report(
         report_id: pending.report_id.clone(),
         agent_version: Some(AGENT_VERSION.to_string()),
         summary: pending.summary,
+        evidence: pending.evidence.clone(),
+        purpose_version: Some("monitor-report-review-v1".into()),
     };
     let sent = send_as_account(&app, &pending, &fields).await;
     let receipt = match sent {
@@ -656,9 +691,18 @@ pub async fn send_report(
             return Err(format!("Sanka did not receive the report: {err}"));
         }
     };
-    let matches = receipt.sha256.eq_ignore_ascii_case(&pending.sha256)
-        && receipt.size_bytes == pending.content.len() as u64;
+    let matches = receipt_matches(&pending, &receipt);
     Ok(UploadResult { receipt, matches })
+}
+
+fn receipt_matches(pending: &PendingUpload, receipt: &ReportReceipt) -> bool {
+    receipt.sha256.eq_ignore_ascii_case(&pending.sha256)
+        && receipt.size_bytes == pending.content.len() as u64
+        && receipt.evidence_sha256
+            == pending
+                .evidence
+                .as_ref()
+                .map(|text| sha256_hex(text.as_bytes()))
 }
 
 /// One send with the account's token; a token Sanka no longer accepts is
@@ -682,6 +726,7 @@ async fn send_as_account(
     for (name, value) in fields.form() {
         shown[name] = match name {
             "summary" => serde_json::to_value(fields.summary).unwrap_or_default(),
+            "evidence" => serde_json::from_str(&value).unwrap_or_default(),
             _ => serde_json::Value::String(value),
         };
     }
@@ -715,6 +760,35 @@ async fn send_as_account(
 }
 
 #[tauri::command]
+pub fn open_report_help(app: AppHandle) -> Result<(), String> {
+    app.opener()
+        .open_url(
+            "https://sanka.com/docs/monitor/send-a-report/",
+            None::<&str>,
+        )
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub async fn open_report_result(app: AppHandle, report_id: String) -> Result<(), String> {
+    let id = uuid::Uuid::parse_str(&report_id).map_err(|err| err.to_string())?;
+    let config = app.state::<AgentState>().config.lock().await.clone();
+    let code = config
+        .account
+        .as_ref()
+        .and_then(|account| account.workspace_code.as_deref())
+        .ok_or("sign in to view your report review")?;
+    let mut url = url::Url::parse(&config.app_base()).map_err(|err| err.to_string())?;
+    url.path_segments_mut()
+        .map_err(|_| "app URL has no path")?
+        .extend([code, "monitor-reports"]);
+    url.query_pairs_mut().append_pair("review", &id.to_string());
+    app.opener()
+        .open_url(url.as_str(), None::<&str>)
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
 pub async fn cancel_send(app: AppHandle) {
     *app.state::<AgentState>().pending_upload.lock().await = None;
 }
@@ -722,6 +796,32 @@ pub async fn cancel_send(app: AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn receipt_verifies_both_frozen_payloads_and_legacy_workbooks() {
+        let mut pending = PendingUpload {
+            token: "preview".into(),
+            file_name: "report.xlsx".into(),
+            content: b"original workbook".to_vec(),
+            sha256: sha256_hex(b"original workbook"),
+            report_id: None,
+            summary: None,
+            evidence: Some("{\"schemaVersion\":1}".into()),
+        };
+        let mut receipt: ReportReceipt = serde_json::from_value(serde_json::json!({
+            "id": "receipt", "receivedAt": "2026-10-28T00:00:00Z", "fileName": "report.xlsx",
+            "format": "xlsx", "sizeBytes": pending.content.len(), "sha256": pending.sha256,
+            "evidenceSha256": sha256_hex(pending.evidence.as_ref().unwrap().as_bytes()),
+        }))
+        .unwrap();
+        assert!(receipt_matches(&pending, &receipt));
+        receipt.evidence_sha256 = None;
+        assert!(!receipt_matches(&pending, &receipt));
+        pending.evidence = None;
+        assert!(receipt_matches(&pending, &receipt));
+        receipt.sha256 = sha256_hex(b"changed");
+        assert!(!receipt_matches(&pending, &receipt));
+    }
 
     #[test]
     fn a_typed_name_gets_the_formats_extension() {
