@@ -23,12 +23,21 @@ computers already connected.
 
 | Platform | File | Notes |
 | --- | --- | --- |
-| macOS | `https://sanka.com/monitor/download/mac-pkg` | Installs `/Applications/Sanka Monitor.app` (universal) and `/Library/LaunchAgents/com.sanka.monitor.agent.plist`, which opens the app in the menu bar at every login. The postinstall opens it at once for whoever is signed in. Signed with the Developer ID Installer certificate, notarized. |
+| macOS | `https://sanka.com/monitor/download/mac-pkg` | Not in 0.4.0: until a release lists a `.pkg`, deploy the universal DMG instead (below). Installs `/Applications/Sanka Monitor.app` (universal) and `/Library/LaunchAgents/com.sanka.monitor.agent.plist`, which opens the app in the menu bar at every login. The postinstall opens it at once for whoever is signed in. Signed with the Developer ID Installer certificate, notarized. |
 | Windows | `https://sanka.com/monitor/download/windows-msi` | Per-machine install. Authenticode-signed by Sanka, Inc. |
 
 Files with stable names for scripts: `https://release.sanka.com/monitor/latest/Sanka-Monitor.pkg`
 and `.../latest/Sanka-Monitor-x64.msi`. Each release lists SHA-256s in `SHA256SUMS`
 (see [SECURITY.md](../SECURITY.md#verifying-a-download)).
+
+### macOS without the .pkg
+
+Releases without a `.pkg` (0.4.0) still deploy through device management: use the
+universal DMG, `https://sanka.com/monitor/download/mac-universal` or
+`https://release.sanka.com/monitor/latest/Sanka-Monitor-universal.dmg`. Jamf Pro,
+Kandji and Intune install an app from a DMG. The DMG doesn't add the login agent, so
+the app first starts when the person opens it; from then on it starts at login, and it
+connects with the deployment token at that first launch.
 
 ## 3. Place the managed preferences
 

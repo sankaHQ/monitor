@@ -89,7 +89,7 @@ visibility of security checks and installed software across the fleet.
 
 | Way to connect | Best for |
 | --- | --- |
-| **Device management** (Jamf Pro, Kandji, Intune): install the signed `.pkg` or MSI and place a deployment token | Fleets: nothing for employees to do. See [docs/mdm-deployment.md](docs/mdm-deployment.md) |
+| **Device management** (Jamf Pro, Kandji, Intune): install the app (the signed `.pkg` or DMG on macOS, the MSI on Windows) and place a deployment token | Fleets: nothing for employees to do. See [docs/mdm-deployment.md](docs/mdm-deployment.md) |
 | **Invite link** by email or a shareable link | Small teams: one click opens "Connect to your company?" in the app |
 | **Sign in with your company** | People who have a Sanka account in the workspace |
 | **One-time code** | Help-desk sessions |
@@ -268,6 +268,8 @@ release, and on `https://release.sanka.com/monitor/`:
 - **macOS `.pkg`** for device management: the universal app in `/Applications` plus a
   login agent for every person (`apps/agent/pkg/`), signed with the Developer ID
   Installer certificate, notarized and stapled. See [docs/mdm-deployment.md](docs/mdm-deployment.md).
+  Built only when the three `MACOS_INSTALLER_*` secrets are set; without them the release
+  ships without a `.pkg`, and IT deploys the universal DMG.
 - **DMGs** are signed, notarized and stapled themselves (Tauri notarizes only the app
   inside), with the Lens layout from `apps/agent/src-tauri/dmg/background.png`.
 - **Windows:** the per-user NSIS installer (x64), the download and the update package,
@@ -299,7 +301,7 @@ ruleset for `v*` in the repository settings.
 | Actions secret | Used for |
 | --- | --- |
 | `MACOS_APPLE_CERTIFICATE`, `MACOS_APPLE_CERTIFICATE_PASSWORD`, `MACOS_APPLE_SIGNING_IDENTITY` | Developer ID Application signing |
-| `MACOS_INSTALLER_CERTIFICATE`, `MACOS_INSTALLER_CERTIFICATE_PASSWORD`, `MACOS_INSTALLER_SIGNING_IDENTITY` | Developer ID Installer signing (the `.pkg`) |
+| `MACOS_INSTALLER_CERTIFICATE`, `MACOS_INSTALLER_CERTIFICATE_PASSWORD`, `MACOS_INSTALLER_SIGNING_IDENTITY` | Developer ID Installer signing (the `.pkg`). Optional: leave all three unset to release without a `.pkg` |
 | `MACOS_APPLE_ID`, `MACOS_APPLE_APP_SPECIFIC_PASSWORD`, `MACOS_APPLE_TEAM_ID` | Notarization |
 | `TAURI_UPDATER_PRIVATE_KEY`, `TAURI_UPDATER_PRIVATE_KEY_PASSWORD` | Updater signatures (`.sig`) |
 | `MONITOR_AZURE_TENANT_ID`, `MONITOR_AZURE_CLIENT_ID`, `MONITOR_AZURE_CLIENT_SECRET` | Windows: the signing credential |

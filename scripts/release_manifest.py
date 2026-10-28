@@ -59,12 +59,19 @@ def build(builds: Path, out: Path) -> None:
         win / "monitor-setup.exe.sig": (f"{stem}-x64-setup.exe.sig", None, None),
     }
 
+    # The .pkg is built only with a Developer ID Installer certificate; without
+    # it, stable.json has no "mac-pkg" and sanka.com's link falls back to GitHub.
+    optional = {uni / "monitor.pkg"}
+
     release, latest = out / "release", out / "latest"
     release.mkdir(parents=True)
     latest.mkdir()
     files = {}
     sums = []
     for source, (name, stable, key) in assets.items():
+        if source in optional and not source.exists():
+            print(f"no {name} in this release")
+            continue
         if not source.is_file() or source.stat().st_size == 0:
             sys.exit(f"missing or empty build output: {source}")
         target = release / name
