@@ -311,7 +311,7 @@ ruleset for `v*` in the repository settings.
 The bucket is public, with `release.sanka.com` set as its custom domain and a CNAME from
 `release.sanka.com` to `<bucket>.t3.tigrisbucket.io`. The S3 endpoint defaults to
 `https://t3.storage.dev`; set the repository variable `MONITOR_CDN_ENDPOINT` to use another.
-| `MONITOR_RELEASE_APP_CLIENT_ID`, `MONITOR_RELEASE_APP_PRIVATE_KEY` | Only for `bridge_to_monitor_releases` (see below): a GitHub App (today the Sanka Change Bot), installed on `sankaHQ/monitor-releases` with Contents read and write, so the bridge release isn't published under a person's name |
+| `MONITOR_RELEASE_APP_CLIENT_ID`, `MONITOR_RELEASE_APP_PRIVATE_KEY` | Publishing the GitHub release: a GitHub App (today the Sanka Change Bot) installed on this repository with Contents read and write, so a release isn't published under a person's name. Every run, dry runs too, checks the app can reach the repository |
 
 A dry run (the default) builds, signs and notarizes everything and uploads the release
 files to the workflow run as the artifact `sanka-monitor-vX.Y.Z`. Publishing is the
@@ -322,13 +322,10 @@ gh workflow run release.yml --repo sankaHQ/monitor -f version=vX.Y.Z -f dry_run=
 gh workflow run release.yml --repo sankaHQ/monitor -f version=vX.Y.Z -f dry_run=false -f release_notes="<notes>"
 ```
 
-**Moving from sankaHQ/monitor-releases (0.4.0).** Agents up to 0.3.x read
-`latest.json` from `sankaHQ/monitor-releases`. Release 0.4.0 with
-`bridge_to_monitor_releases=true` (needs the release bot secrets; a dry run with it checks the app can reach monitor-releases) to publish it there
-one last time; those agents update to 0.4.0, which reads the new feed. Archive
-`monitor-releases` once its last `latest.json` download count levels off and connected
-devices report 0.4.0 or later. Archived repositories keep serving release files, so
-old links and installs that haven't run since keep working.
+**Releases up to 0.3.x** are on `sankaHQ/monitor-releases`, and those versions check it
+for updates. Nothing is published there any more, so they don't update to 0.4.0 by
+themselves: reinstall from https://sanka.com/monitor/download/ to move to 0.4.0, which
+updates from `release.sanka.com` and this repository.
 
 **Retiring the universal build.** Track Intel Macs through the `arch` that check-ins
 now report and through the download page. When they stay below 3% for 60 days, warn

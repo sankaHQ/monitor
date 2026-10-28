@@ -7,7 +7,8 @@ this repository's [releases](https://github.com/sankaHQ/monitor/releases) and on
 `https://release.sanka.com/monitor/`; older releases do not receive backports. The
 app updates itself from that feed unless the person, or device management, turned
 automatic update checks off. Releases up to 0.3.x were published on
-[sankaHQ/monitor-releases](https://github.com/sankaHQ/monitor-releases), now archived.
+[sankaHQ/monitor-releases](https://github.com/sankaHQ/monitor-releases); they don't update
+to 0.4.0 by themselves, so reinstall from https://sanka.com/monitor/download/.
 
 ## Verifying a download
 
