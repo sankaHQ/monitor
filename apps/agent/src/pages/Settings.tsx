@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AppContext } from "../context";
 import { formatWhen, LANGUAGE_NAMES } from "../i18n";
@@ -9,6 +9,9 @@ type Schedule = "off" | CheckSchedule;
 
 /// Preferences: appearance, regular checks, opening at login (connected),
 /// the default report language, and the version with its update.
+/** The last Check for Updates… request Settings acted on. */
+let handledUpdateCheck = 0;
+
 export function SettingsPage({ ctx }: { ctx: AppContext }) {
   const { s, lang, status, saas, busy, theme, reportLang } = ctx;
   const t = s.settings;
@@ -44,6 +47,15 @@ export function SettingsPage({ ctx }: { ctx: AppContext }) {
       ctx.refresh();
     }
   };
+
+  // Check for Updates… in the app menu opened Settings: check now. The
+  // request usually arrives before this page mounts, so the last one handled
+  // is kept outside the component.
+  useEffect(() => {
+    if (ctx.updateCheckRequest === handledUpdateCheck) return;
+    handledUpdateCheck = ctx.updateCheckRequest;
+    checkNow();
+  });
 
   const ready = status.updateReady;
   return (

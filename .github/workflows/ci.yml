@@ -6,6 +6,28 @@ on:
   pull_request:
 
 jobs:
+  # Known vulnerabilities in what ships: the Rust crates (RustSec) and the
+  # app's npm packages. Unmaintained-crate warnings (Tauri's Linux GTK stack)
+  # are reported but don't fail the run.
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: Rust crates (RustSec)
+        run: cargo audit
+
+      - name: npm packages shipped in the app
+        working-directory: apps/agent
+        run: npm audit --omit=dev --audit-level=moderate
+
   check:
     name: Lint, test, build (macOS)
     runs-on: macos-14

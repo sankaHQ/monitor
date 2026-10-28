@@ -24,6 +24,31 @@ pub struct DeviceInfo {
     pub device_model: Option<String>,
 }
 
+/// How long the window reuses the device's facts before reading them again.
+const DEVICE_INFO_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+
+static DEVICE_INFO: std::sync::Mutex<Option<(std::time::Instant, DeviceInfo)>> =
+    std::sync::Mutex::new(None);
+
+/// Reads the device's facts and keeps them for [`device_info_cached`].
+pub fn device_info() -> DeviceInfo {
+    let info = collect_device_info();
+    *DEVICE_INFO.lock().unwrap() = Some((std::time::Instant::now(), info.clone()));
+    info
+}
+
+/// The device's facts for the window's status, read at most every ten
+/// minutes: the probes (PowerShell on Windows) would otherwise run on every
+/// status refresh. A scan or a check-in reads them fresh.
+pub fn device_info_cached() -> DeviceInfo {
+    if let Some((at, info)) = DEVICE_INFO.lock().unwrap().as_ref() {
+        if at.elapsed() < DEVICE_INFO_TTL {
+            return info.clone();
+        }
+    }
+    device_info()
+}
+
 #[cfg(target_os = "macos")]
 fn probe(cmd: &str, args: &[&str]) -> Option<String> {
     let output = std::process::Command::new(cmd).args(args).output().ok()?;
@@ -219,7 +244,7 @@ pub fn without_person_checks(posture: Vec<PostureCheckResult>) -> Vec<PostureChe
 
 /// Scans this device now. Blocking: the probes take a few seconds.
 pub fn run_scan(now: DateTime<Utc>) -> ScanReport {
-    let device = collect_device_info();
+    let device = device_info();
     let mut posture = collect_posture();
     if running_as_system_account() {
         posture = without_person_checks(posture);

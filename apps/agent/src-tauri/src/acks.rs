@@ -138,6 +138,30 @@ pub fn evaluate(id: PostureCheckId, pass: Option<bool>, policy: &Policy) -> (Che
     }
 }
 
+/// Checks that fail but pass because the person acknowledged them: their
+/// risks leave the window's Risks and the menu bar's count.
+pub fn accepted(report: &monitor_report::ScanReport, policy: &Policy) -> Vec<PostureCheckId> {
+    report
+        .checks
+        .iter()
+        .filter(|check| {
+            check.pass == Some(false)
+                && evaluate(check.id, check.pass, policy).0 == CheckState::Pass
+        })
+        .map(|check| check.id)
+        .collect()
+}
+
+/// The risks still to review after acknowledgements, as the window counts them.
+pub fn open_risks(report: &monitor_report::ScanReport, policy: &Policy) -> usize {
+    let accepted = accepted(report, policy);
+    report
+        .findings
+        .iter()
+        .filter(|finding| finding.check.is_none_or(|id| !accepted.contains(&id)))
+        .count()
+}
+
 /// After a scan: starts or clears each acknowledgeable check's failing-since
 /// time, and drops an acknowledgement once its check passes.
 pub async fn note_scan(app: &AppHandle, report: &monitor_report::ScanReport) {
