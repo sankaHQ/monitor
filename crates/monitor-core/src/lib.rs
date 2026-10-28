@@ -1,7 +1,7 @@
 //! Shared types for the Sanka Monitor desktop agent.
 //!
-//! Privacy invariant (structural, not policy): usage telemetry carries *which
-//! app* had focus and *when* — nothing else. [`UsageEvent`] has no fields for
+//! Privacy invariant (structural, not policy): local usage records carry *which
+//! app* had focus and *when*. Only aggregated UTC dates leave the device. [`UsageEvent`] has no fields for
 //! window titles, URLs, document names, input contents, or captures, and none
 //! may be added. The wire-shape test below pins this.
 
@@ -40,12 +40,11 @@ pub enum SharingConsent {
     OptedIn,
 }
 
-/// One closed foreground-focus interval for one app. Serializes to the
-/// `/api/v2/monitor/agent/events` wire shape (camelCase).
+/// One local foreground-focus interval. Never use this type in an upload payload.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageEvent {
-    /// Client-generated id; the server dedupes on it (at-least-once upload).
+    /// Local queue id; never uploaded.
     pub event_id: Uuid,
     /// macOS bundle id (e.g. `com.tinyspeck.slackmacgap`) or Windows
     /// executable name. Classification to app slugs happens server-side.
@@ -74,10 +73,9 @@ mod tests {
         }
     }
 
-    /// The privacy invariant as a test: the wire shape carries exactly these
-    /// fields. Adding a title/url/content field must fail here first.
+    /// Even local intervals carry no title, URL or content.
     #[test]
-    fn usage_event_wire_shape_is_minimal() {
+    fn local_usage_record_has_no_content() {
         let value = serde_json::to_value(sample()).unwrap();
         let keys: Vec<&str> = value
             .as_object()

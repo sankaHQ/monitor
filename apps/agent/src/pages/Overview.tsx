@@ -104,7 +104,7 @@ export function Overview({ ctx }: { ctx: AppContext }) {
             {scanning
               ? s.overview.scanningHint
               : scan
-                ? s.overview.summary(passed, checks.length, scan.counts.programsPastSupport, scan.counts.programs)
+                ? s.overview.summary(passed, checks.length, scan.counts.programsPastSupport, scan.counts.programsAssessed, scan.counts.programsNotAssessed)
                 : null}
           </span>
         </div>
@@ -122,7 +122,7 @@ export function Overview({ ctx }: { ctx: AppContext }) {
             <dt>{s.overview.risks}</dt>
             <dd>{s.overview.riskCounts(scan.counts.high, scan.counts.medium, scan.counts.low)}</dd>
             <dt>{s.overview.programs}</dt>
-            <dd>{s.overview.programCounts(scan.counts.programs, scan.counts.programsPastSupport)}</dd>
+            <dd>{s.overview.programCounts(scan.counts.programs, scan.counts.programsPastSupport, scan.counts.programsAssessed, scan.counts.programsNotAssessed)}</dd>
           </>
         ) : null}
         <hr />

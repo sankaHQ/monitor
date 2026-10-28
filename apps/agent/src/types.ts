@@ -151,6 +151,8 @@ export type ScanView = {
     checksUnknown: number;
     programs: number;
     programsPastSupport: number;
+    programsAssessed: number;
+    programsNotAssessed: number;
   };
   findings: {
     /** The failed check behind a device finding. */
@@ -315,6 +317,8 @@ export type SendPreview = {
     osName: string;
     scannedAt: string;
     summary: ReportSummary;
+    programsAssessed: number;
+    programsNotAssessed: number;
     saas: number;
     saasNotAllowed: number;
     /** The SaaS sheet includes each SaaS's last day used and days used. */

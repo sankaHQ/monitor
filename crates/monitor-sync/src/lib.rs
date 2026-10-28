@@ -14,12 +14,13 @@
 //! sharing (`/agent/saas`): each SaaS's catalog key and the last day it was
 //! used, nothing else ([`SaasUploadRequest`]).
 
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
 use monitor_core::{AGENT_API_BASE_PATH, DESKTOP_API_BASE_PATH};
 use monitor_inventory::InstalledSoftware;
 use monitor_posture::PostureCheckResult;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentEndpoint {
@@ -310,7 +311,38 @@ pub struct CheckinRequest {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EventBatchRequest {
-    pub events: Vec<monitor_core::UsageEvent>,
+    pub events: Vec<UsageDay>,
+}
+
+/// Only this daily fact can leave the device; focus intervals stay in SQLite.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageDay {
+    pub app_id: String,
+    pub app_name: String,
+    pub date: NaiveDate,
+}
+
+pub fn daily_presence(events: &[monitor_core::UsageEvent]) -> Vec<UsageDay> {
+    let mut days = BTreeMap::new();
+    for event in events {
+        if event.ended_at <= event.started_at {
+            continue;
+        }
+        let mut day = event.started_at.date_naive();
+        let last = (event.ended_at - Duration::microseconds(1)).date_naive();
+        while day <= last {
+            days.entry((event.app_id.clone(), day))
+                .or_insert_with(|| UsageDay {
+                    app_id: event.app_id.clone(),
+                    app_name: event.app_name.clone(),
+                    date: day,
+                });
+            let Some(next) = day.succ_opt() else { break };
+            day = next;
+        }
+    }
+    days.into_values().collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -916,6 +948,43 @@ mod tests {
     use chrono::TimeZone;
     use monitor_inventory::SoftwareSource;
     use monitor_posture::{PostureCheckId, PostureCheckResult};
+
+    #[test]
+    fn upload_contains_only_deduplicated_utc_days() {
+        use chrono::TimeZone;
+        let at = |day, hour, minute| {
+            Utc.with_ymd_and_hms(2026, 10, day, hour, minute, 0)
+                .unwrap()
+        };
+        let event = |start, end| monitor_core::UsageEvent {
+            event_id: uuid::Uuid::new_v4(),
+            app_id: "test.app".into(),
+            app_name: "Test".into(),
+            started_at: start,
+            ended_at: end,
+            ended_by_idle: true,
+        };
+        let intervals = vec![
+            event(at(27, 9, 0), at(27, 9, 5)),
+            event(at(27, 16, 0), at(27, 19, 0)),
+            event(at(27, 23, 59), at(28, 0, 1)),
+        ];
+        let days = daily_presence(&intervals);
+        assert_eq!(
+            days.iter().map(|d| d.date.to_string()).collect::<Vec<_>>(),
+            ["2026-10-27", "2026-10-28"]
+        );
+        let wire = serde_json::to_value(EventBatchRequest { events: days }).unwrap();
+        assert_eq!(
+            wire["events"][0],
+            serde_json::json!({"appId": "test.app", "appName": "Test", "date": "2026-10-27"})
+        );
+        assert_eq!(
+            daily_presence(&[event(at(27, 23, 59), at(28, 0, 0))]).len(),
+            1
+        );
+        assert!(daily_presence(&[event(at(27, 9, 0), at(27, 9, 0))]).is_empty());
+    }
 
     #[test]
     fn endpoints_live_under_the_monitor_agent_namespace() {

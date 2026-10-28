@@ -49,14 +49,14 @@ export type Strings = {
     scanningHint: string;
     notScanned: string;
     verdict: (risks: number) => string;
-    summary: (passed: number, checks: number, past: number, programs: number) => string;
+    summary: (passed: number, checks: number, past: number, assessed: number, unknown: number) => string;
     scanAgain: string;
     scanningButton: string;
     lastScan: string;
     risks: string;
     riskCounts: (high: number, medium: number, low: number) => string;
     programs: string;
-    programCounts: (programs: number, past: number) => string;
+    programCounts: (programs: number, past: number, assessed: number, unknown: number) => string;
     device: string;
     os: string;
     osSupport: string;
@@ -167,7 +167,7 @@ export type Strings = {
     risks: string;
     riskCounts: (high: number, medium: number, low: number) => string;
     programs: string;
-    programCounts: (past: number, total: number) => string;
+    programCounts: (past: number, assessed: number, unknown: number) => string;
     saas: string;
     saasCounts: (found: number, notAllowed: number, browserCheck: boolean) => string;
     scanned: string;
@@ -365,16 +365,16 @@ export const STRINGS: Record<Lang, Strings> = {
       scanningHint: "This takes a few seconds.",
       notScanned: "Not scanned yet",
       verdict: (risks) =>
-        risks === 0 ? "No risks found" : risks === 1 ? "1 risk to review" : `${risks} risks to review`,
-      summary: (passed, checks, past, programs) =>
-        `${passed} of ${checks} checks passing · ${past} of ${programs} programs past support`,
+        risks === 0 ? "No risks found in assessed checks" : risks === 1 ? "1 risk to review" : `${risks} risks to review`,
+      summary: (passed, checks, past, assessed, unknown) =>
+        `${passed} of ${checks} checks passing · ${past} past support / ${assessed} assessed · ${unknown} not assessed`,
       scanAgain: "Scan again",
       scanningButton: "Scanning…",
       lastScan: "Last scan",
       risks: "Risks",
       riskCounts: (high, medium, low) => `${high} high · ${medium} medium · ${low} low`,
       programs: "Programs",
-      programCounts: (programs, past) => `${programs} installed · ${past} past support`,
+      programCounts: (programs, past, assessed, unknown) => `${programs} installed · ${assessed} assessed (${past} past support) · ${unknown} not assessed`,
       device: "Device",
       os: "OS version",
       osSupport: "Support not assessed",
@@ -387,7 +387,7 @@ export const STRINGS: Record<Lang, Strings> = {
       version: "Version",
       needsAttention: "Needs attention",
       noRisks:
-        "No risks found. Risks come from vendor support dates and this computer's settings, so no risks doesn't prove it's safe.",
+        "No risks found in completed checks. Items marked Not assessed remain unknown; this is not a safety guarantee.",
       fromWorkspace: "From your workspace",
       today: "Today",
     },
@@ -499,7 +499,7 @@ export const STRINGS: Record<Lang, Strings> = {
       risks: "Risks",
       riskCounts: (high, medium, low) => `${high} high · ${medium} medium · ${low} low`,
       programs: "Programs",
-      programCounts: (past, total) => `${past} of ${total} past support`,
+      programCounts: (past, assessed, unknown) => `${past} past support / ${assessed} assessed · ${unknown} not assessed`,
       saas: "SaaS",
       saasCounts: (found, notAllowed, browserCheck) =>
         `${found} found (${notAllowed} not allowed)` + (browserCheck ? " · with last day used (browser check)" : ""),
@@ -564,7 +564,7 @@ export const STRINGS: Record<Lang, Strings> = {
       connect: "Connect",
       connecting: "Connecting…",
       shareUsage: "Share which apps I use each day",
-      shareUsageHint: "Off by default. Days only, never durations. Turn it off any time.",
+      shareUsageHint: "Off by default. UTC days only, never durations. Turn it off any time.",
       usage: "App usage",
       usageToday: "Used today",
       noneToday: "None recorded yet today",
@@ -588,7 +588,7 @@ export const STRINGS: Record<Lang, Strings> = {
       notSharedValue: "Files, browsing, screen, keystrokes",
       usage: "App usage",
       usageValue: "Only if you turn it on",
-      shareUsage: "Also share which apps I use each day (days only, never durations)",
+      shareUsage: "Also share which apps I use each day (UTC days only, never durations)",
       connect: "Connect",
       connecting: "Connecting…",
       loading: "Checking the invite…",
@@ -720,16 +720,16 @@ export const STRINGS: Record<Lang, Strings> = {
       scanning: "このPCをスキャンしています…",
       scanningHint: "数秒かかります。",
       notScanned: "まだスキャンしていません",
-      verdict: (risks) => (risks === 0 ? "リスクは見つかりませんでした" : `確認が必要なリスク：${risks}件`),
-      summary: (passed, checks, past, programs) =>
-        `チェック ${checks}件中 ${passed}件が合格 · ソフトウェア ${programs}件中 ${past}件がサポート終了`,
+      verdict: (risks) => (risks === 0 ? "判定済みの項目にリスクは見つかりませんでした" : `確認が必要なリスク：${risks}件`),
+      summary: (passed, checks, past, assessed, unknown) =>
+        `チェック ${checks}件中 ${passed}件が合格 · 判定済み ${assessed}件中 ${past}件がサポート終了 · 未判定 ${unknown}件`,
       scanAgain: "もう一度スキャン",
       scanningButton: "スキャン中…",
       lastScan: "前回のスキャン",
       risks: "リスク",
       riskCounts: (high, medium, low) => `高 ${high}・中 ${medium}・低 ${low}`,
       programs: "ソフトウェア",
-      programCounts: (programs, past) => `${programs}件 · サポート終了 ${past}件`,
+      programCounts: (programs, past, assessed, unknown) => `${programs}件 · 判定済み ${assessed}件（サポート終了 ${past}件）· 未判定 ${unknown}件`,
       device: "デバイス",
       os: "OSのバージョン",
       osSupport: "サポート状況は未判定",
@@ -742,7 +742,7 @@ export const STRINGS: Record<Lang, Strings> = {
       version: "バージョン",
       needsAttention: "対応が必要",
       noRisks:
-        "リスクは見つかりませんでした。リスクは提供元のサポート期限とこのPCの設定から判定しています。リスクが表示されなくても、PCが安全とは限りません。",
+        "判定済みの項目にリスクは見つかりませんでした。未判定の項目は状況が不明であり、安全を保証するものではありません。",
       fromWorkspace: "ワークスペースからのお知らせ",
       today: "今日",
     },
@@ -854,7 +854,7 @@ export const STRINGS: Record<Lang, Strings> = {
       risks: "リスク",
       riskCounts: (high, medium, low) => `高 ${high}・中 ${medium}・低 ${low}`,
       programs: "ソフトウェア",
-      programCounts: (past, total) => `${total}件中 ${past}件がサポート終了`,
+      programCounts: (past, assessed, unknown) => `判定済み ${assessed}件中 ${past}件がサポート終了 · 未判定 ${unknown}件`,
       saas: "SaaS",
       saasCounts: (found, notAllowed, browserCheck) =>
         `${found}件（未許可 ${notAllowed}件）` + (browserCheck ? "・最終利用日を含む（ブラウザーの確認）" : ""),
@@ -919,7 +919,7 @@ export const STRINGS: Record<Lang, Strings> = {
       connect: "接続",
       connecting: "接続中…",
       shareUsage: "日ごとに使ったアプリを共有する",
-      shareUsageHint: "初期設定はオフです。共有するのは日付だけで、利用時間は共有しません。いつでもオフにできます。",
+      shareUsageHint: "初期設定はオフです。共有するのはUTCの日付だけで、利用時間は共有しません。いつでもオフにできます。",
       usage: "アプリの利用",
       usageToday: "今日使ったアプリ",
       noneToday: "今日はまだ記録がありません",
@@ -943,7 +943,7 @@ export const STRINGS: Record<Lang, Strings> = {
       notSharedValue: "ファイル、閲覧履歴、画面、キー入力",
       usage: "アプリの利用",
       usageValue: "オンにした場合だけ",
-      shareUsage: "日ごとに使ったアプリも共有する（日付だけで、利用時間は共有しません）",
+      shareUsage: "日ごとに使ったアプリも共有する（UTCの日付だけで、利用時間は共有しません）",
       connect: "接続",
       connecting: "接続中…",
       loading: "招待を確認しています…",

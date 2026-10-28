@@ -272,7 +272,7 @@ export function SendSheet({ ctx, onClose }: { ctx: AppContext; onClose: () => vo
                     {t.riskCounts(preview.scan.summary.high, preview.scan.summary.medium, preview.scan.summary.low)}
                   </dd>
                   <dt>{t.programs}</dt>
-                  <dd>{t.programCounts(preview.scan.summary.programsPastSupport, preview.scan.summary.programs)}</dd>
+                  <dd>{t.programCounts(preview.scan.summary.programsPastSupport, preview.scan.programsAssessed, preview.scan.programsNotAssessed)}</dd>
                   <dt>{t.saas}</dt>
                   <dd>{t.saasCounts(preview.scan.saas, preview.scan.saasNotAllowed, preview.scan.saasBrowserCheck)}</dd>
                   <dt>{t.scanned}</dt>

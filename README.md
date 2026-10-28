@@ -160,7 +160,13 @@ Sanka Monitor is local-first:
   computer, but never turns on app-usage sharing.
 - **Usage, connected and opted in only.** App usage is recorded only while the
   device is connected *and* the person has turned sharing on (default off); the
-  console shows it as daily app presence, never durations.
+  app aggregates it into UTC calendar dates before upload. The server stores only
+  app/device/date facts, never focus intervals or durations. A local acknowledgement
+  ledger suppresses repeat uploads for an app/day even after restarting the app. Release the daily-usage
+  API before agent 0.4.2; earlier interval uploads are refused until the agent updates.
+- **Lifecycle coverage.** Overview, the send preview and HTML/Excel summaries show
+  assessed and not-assessed program counts separately. No finding among assessed
+  items does not establish that unassessed software or OS versions are safe.
 - **Who opened your data, connected only.** Each time an IT admin opens the
   person's daily app presence, the workspace logs it with a reason. The Privacy
   pane lists those views (when, who or "An IT admin", the days viewed, the reason),
