@@ -9,11 +9,11 @@
 //
 // The Lens is an open ring with a center dot, in black on a light pink tile.
 // It comes in two designs. On the Mac (icon.icns, the DMG) it is glass:
-// glossy black on a pink glass tile (#fcf5f2 → #f1dfd8), in the Liquid Glass
+// glossy black on a pink glass tile (#fffaf7 → #f6e4dc), in the Liquid Glass
 // style of macOS 26, with a sheen across the top, a bright rim, and a lit,
 // shadowed glyph (icon-1024-glass.png). Everywhere else (icon.ico, icon.png,
 // the in-app and README logo, the web) it is flat: solid #16151a on a solid
-// #f8ece7 tile, with no sheen, rim, gradients or shadows (icon-1024-flat.png).
+// #fff4ef tile, with no sheen, rim, gradients or shadows (icon-1024-flat.png).
 // Template icons are black with alpha only, so macOS tints
 // them for light and dark menu bars; the state shows in the shape: a badge in
 // the ring's gap when something needs attention, a hollow dot when paused.
@@ -107,7 +107,7 @@ save(bitmap(1024, 1024) { cg in
     cg.saveGState()
     cg.setShadow(offset: CGSize(width: 0, height: 12), blur: 30, color: rgb(0x3a2620, 0.22))
     cg.addPath(tile)
-    cg.setFillColor(rgb(0xf8efeb))
+    cg.setFillColor(rgb(0xfff4ef))
     cg.fillPath()
     cg.restoreGState()
 
@@ -115,7 +115,7 @@ save(bitmap(1024, 1024) { cg in
     cg.addPath(tile)
     cg.clip()
     // Pink body, lighter at the top.
-    cg.drawLinearGradient(gradient([rgb(0xfcf5f2), rgb(0xf8ece7), rgb(0xf1dfd8)], [0, 0.55, 1]),
+    cg.drawLinearGradient(gradient([rgb(0xfffaf7), rgb(0xfff4ef), rgb(0xf6e4dc)], [0, 0.55, 1]),
                           start: CGPoint(x: 512, y: 100), end: CGPoint(x: 512, y: 924), options: [])
     // Sheen: a soft white bloom across the upper half.
     cg.drawRadialGradient(gradient([rgb(0xffffff, 0.6), rgb(0xffffff, 0)], [0, 1]),
@@ -167,7 +167,7 @@ save(bitmap(1024, 1024) { cg in
 save(bitmap(1024, 1024) { cg in
     cg.addPath(CGPath(roundedRect: CGRect(x: 100, y: 100, width: 824, height: 824),
                       cornerWidth: 185, cornerHeight: 185, transform: nil))
-    cg.setFillColor(rgb(0xf8ece7))
+    cg.setFillColor(rgb(0xfff4ef))
     cg.fillPath()
     cg.addPath(lensOutline())
     cg.setFillColor(rgb(0x16151a))
