@@ -132,15 +132,37 @@ jobs:
           if [ "$DRY_RUN" != "true" ]; then
             require "uploading to release.sanka.com" \
               MONITOR_CDN_ACCESS_KEY_ID MONITOR_CDN_SECRET_ACCESS_KEY MONITOR_CDN_BUCKET
-            if [ "$BRIDGE" = "true" ]; then
-              require "the bridge release in sankaHQ/monitor-releases (the Sanka Release Bot app, contents:write)" \
-                MONITOR_RELEASE_APP_CLIENT_ID MONITOR_RELEASE_APP_PRIVATE_KEY
-            fi
+          fi
+          if [ "$BRIDGE" = "true" ]; then
+            require "the bridge release in sankaHQ/monitor-releases (the release bot app, contents:write)" \
+              MONITOR_RELEASE_APP_CLIENT_ID MONITOR_RELEASE_APP_PRIVATE_KEY
           fi
           if [ "$missing" -ne 0 ]; then
             echo "Add the missing Actions secrets to this repository (README.md#release, docs/windows.md#release), then run the release again." >&2
             exit 1
           fi
+
+      # A dry run with the bridge checks the release bot can reach monitor-releases
+      # before anything is built, so a missing installation shows up in minutes.
+      - name: Get a release bot token for monitor-releases
+        id: release-bot
+        if: ${{ inputs.bridge_to_monitor_releases }}
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.MONITOR_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.MONITOR_RELEASE_APP_PRIVATE_KEY }}
+          owner: sankaHQ
+          repositories: monitor-releases
+
+      - name: Check the release bot can publish to monitor-releases
+        if: ${{ inputs.bridge_to_monitor_releases }}
+        env:
+          GH_TOKEN: ${{ steps.release-bot.outputs.token }}
+          APP_SLUG: ${{ steps.release-bot.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          gh api repos/sankaHQ/monitor-releases/releases/latest --jq '"monitor-releases latest: " + .tag_name'
+          echo "The bridge release will be published as ${APP_SLUG}[bot]."
 
   macos:
     name: macOS ${{ matrix.name }} (signed + notarized)
@@ -582,10 +604,10 @@ jobs:
             --latest out/release/* out/latest.json
           gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name'
 
-      # The bridge release is published by the Sanka Release Bot app, not a person's
-      # token, so it shows the bot as its author (the release here shows
+      # The bridge release is published by a GitHub App (MONITOR_RELEASE_APP_*), not a
+      # person's token, so it shows the bot as its author (the release here shows
       # github-actions). The token is scoped to monitor-releases and revoked after the job.
-      - name: Get a Sanka Release Bot token for monitor-releases
+      - name: Get a release bot token for monitor-releases
         id: release-bot
         if: ${{ !inputs.dry_run && inputs.bridge_to_monitor_releases }}
         uses: actions/create-github-app-token@v3
