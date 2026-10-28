@@ -128,7 +128,10 @@ pub fn write(report: &ScanReport, lang: Lang) -> String {
     ));
     html.push_str(&tile(
         "",
-        format!("{}/{}", counts.programs_past_support, counts.programs),
+        format!(
+            "{}/{}",
+            counts.programs_past_support, counts.programs_assessed
+        ),
         l.programs_past_support,
     ));
     // "Not allowed" only when a company allowlist judged the SaaS: without
@@ -148,6 +151,13 @@ pub fn write(report: &ScanReport, lang: Lang) -> String {
         tile("", counts.saas.to_string(), l.saas_found)
     });
     html.push_str("</div>");
+    html.push_str(&format!(
+        "<p class=\"fix\">{}: {} · {}: {}</p>",
+        esc(l.programs_assessed),
+        counts.programs_assessed,
+        esc(l.programs_not_assessed),
+        counts.programs_not_assessed
+    ));
 
     // Top risks
     html.push_str(&format!("<h2>{}</h2>", esc(l.top_findings)));
@@ -382,6 +392,24 @@ pub fn write(report: &ScanReport, lang: Lang) -> String {
 mod tests {
     use super::*;
     use crate::fixtures;
+
+    #[test]
+    fn unknown_lifecycle_is_visible_in_the_export_not_a_clean_bill_of_health() {
+        let mut report = fixtures::windows_report();
+        for record in &mut report.software {
+            record.lifecycle = None;
+        }
+        report.os_lifecycle = None;
+        report.findings.clear();
+        for lang in [Lang::En, Lang::Ja] {
+            let html = write(&report, lang);
+            let labels = copy::labels(lang);
+            assert!(html.contains(&format!("{}: 0", labels.programs_assessed)));
+            assert!(html.contains(&format!("{}: 5", labels.programs_not_assessed)));
+            assert!(html.contains(labels.legacy_none));
+        }
+        assert!(!write(&report, Lang::En).contains("No installed software is past or near"));
+    }
 
     #[test]
     fn device_text_is_escaped_and_nothing_loads_from_elsewhere() {

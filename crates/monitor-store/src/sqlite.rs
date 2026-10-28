@@ -9,9 +9,10 @@
 //! Everything older than the retention window is deleted whatever its state,
 //! and deleted rows are overwritten on disk.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use monitor_core::UsageEvent;
 use rusqlite::{params, Connection};
 use uuid::Uuid;
@@ -54,6 +55,11 @@ impl SqliteQueue {
         let conn = queue.connect()?;
         conn.execute_batch(
             "
+            CREATE TABLE IF NOT EXISTS uploaded_days (
+              app_id TEXT NOT NULL,
+              day TEXT NOT NULL,
+              PRIMARY KEY (app_id, day)
+            );
             CREATE TABLE IF NOT EXISTS usage_events (
               event_id TEXT PRIMARY KEY,
               app_id TEXT NOT NULL,
@@ -128,6 +134,27 @@ impl SqliteQueue {
         rows.collect()
     }
 
+    /// Acknowledged daily facts survive restarts, so later focus intervals do not
+    /// cause another upload of the same app/day.
+    pub fn uploaded_days(&self) -> StoreResult<BTreeSet<(String, NaiveDate)>> {
+        let conn = self.connect()?;
+        let mut query = conn.prepare("SELECT app_id, day FROM uploaded_days")?;
+        let rows = query.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect()
+    }
+
+    pub fn remember_uploaded_days(&self, days: &[(String, NaiveDate)]) -> StoreResult<()> {
+        let mut conn = self.connect()?;
+        let tx = conn.transaction()?;
+        for (app, day) in days {
+            tx.execute(
+                "INSERT OR IGNORE INTO uploaded_days(app_id, day) VALUES (?1, ?2)",
+                params![app, day.to_string()],
+            )?;
+        }
+        tx.commit()
+    }
+
     pub fn mark_uploaded(&self, event_ids: &[Uuid]) -> StoreResult<usize> {
         if event_ids.is_empty() {
             return Ok(0);
@@ -157,9 +184,11 @@ impl SqliteQueue {
 
     pub fn is_empty(&self) -> StoreResult<bool> {
         let conn = self.connect()?;
-        let any: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM usage_events)", [], |row| {
-            row.get(0)
-        })?;
+        let any: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM usage_events) OR EXISTS(SELECT 1 FROM uploaded_days)",
+            [],
+            |row| row.get(0),
+        )?;
         Ok(!any)
     }
 
@@ -195,6 +224,7 @@ impl SqliteQueue {
     pub fn wipe(&self) -> StoreResult<usize> {
         let conn = self.connect()?;
         let deleted = conn.execute("DELETE FROM usage_events", [])?;
+        conn.execute("DELETE FROM uploaded_days", [])?;
         conn.execute_batch("VACUUM")?;
         conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
         Ok(deleted)
@@ -215,6 +245,10 @@ impl SqliteQueue {
         let pruned = conn.execute(
             "DELETE FROM usage_events WHERE started_at < ?1",
             params![cutoff.to_rfc3339()],
+        )?;
+        conn.execute(
+            "DELETE FROM uploaded_days WHERE day < ?1",
+            params![cutoff.date_naive().to_string()],
         )?;
         let withheld = match upload_since {
             Some(since) => conn.execute(
@@ -258,6 +292,30 @@ mod tests {
 
     fn names(events: &[UsageEvent]) -> Vec<&str> {
         events.iter().map(|event| event.app_name.as_str()).collect()
+    }
+
+    #[test]
+    fn acknowledged_days_survive_restart_and_leave_with_the_local_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("daily.db");
+        let day = at(0).date_naive();
+        let queue = SqliteQueue::open(&path).unwrap();
+        let fact = ("test.app".to_string(), day);
+        queue
+            .remember_uploaded_days(&[fact.clone(), fact.clone()])
+            .unwrap();
+        let reopened = SqliteQueue::open(&path).unwrap();
+        assert_eq!(reopened.uploaded_days().unwrap(), BTreeSet::from([fact]));
+        assert!(!reopened.is_empty().unwrap());
+        reopened
+            .apply_policy(at(0) + Duration::days(MAX_QUEUE_AGE_DAYS + 1), None)
+            .unwrap();
+        assert!(reopened.uploaded_days().unwrap().is_empty());
+        reopened
+            .remember_uploaded_days(&[("test.app".into(), day)])
+            .unwrap();
+        reopened.wipe().unwrap();
+        assert!(reopened.is_empty().unwrap());
     }
 
     #[test]

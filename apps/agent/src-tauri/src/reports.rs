@@ -454,6 +454,8 @@ pub struct SendScan {
     pub os_name: String,
     pub scanned_at: DateTime<Utc>,
     pub summary: ReportSummary,
+    pub programs_assessed: usize,
+    pub programs_not_assessed: usize,
     /// The workbook's SaaS sheet, as the preview names it: shown, never sent
     /// as separate fields.
     pub saas: usize,
@@ -557,6 +559,8 @@ pub async fn prepare_send(app: AppHandle, lang: Lang) -> Result<SendPreview, Str
         os_name: copy::os_name(&report.device),
         scanned_at: report.scanned_at,
         summary,
+        programs_assessed: counts.programs_assessed,
+        programs_not_assessed: counts.programs_not_assessed,
         saas: counts.saas,
         saas_not_allowed: counts.saas_not_allowed,
         saas_browser_check: report.saas_check.browsers.is_some(),

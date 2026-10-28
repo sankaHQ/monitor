@@ -1685,55 +1685,82 @@ pub async fn run_upload(app: &AppHandle) -> Result<(), String> {
     };
 
     let queue = runtime.queue.clone();
-    let pending = tauri::async_runtime::spawn_blocking(move || queue.pending(500, since))
-        .await
-        .map_err(|err| err.to_string())?
-        .map_err(|err| err.to_string())?;
+    let (pending, uploaded) = tauri::async_runtime::spawn_blocking(move || {
+        let pending = queue.pending(500, since)?;
+        queue.uploaded_days().map(|uploaded| (pending, uploaded))
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(|err| err.to_string())?;
     if pending.is_empty() {
         return Ok(());
     }
 
-    let secret = read_device_secret(device_id.clone()).await?;
-    let client =
-        AgentClient::new(config.api_base(), AGENT_VERSION).map_err(|err| err.to_string())?;
-    let token = match client.issue_token(&device_id, &secret).await {
-        Ok(token) => token,
-        Err(err) => return Err(call_failed(app, &device_id, err).await),
-    };
+    let days: Vec<_> = monitor_sync::daily_presence(&pending)
+        .into_iter()
+        .filter(|day| !uploaded.contains(&(day.app_id.clone(), day.date)))
+        .collect();
+    if !days.is_empty() {
+        let secret = read_device_secret(device_id.clone()).await?;
+        let client =
+            AgentClient::new(config.api_base(), AGENT_VERSION).map_err(|err| err.to_string())?;
+        let token = match client.issue_token(&device_id, &secret).await {
+            Ok(token) => token,
+            Err(err) => return Err(call_failed(app, &device_id, err).await),
+        };
 
-    // Consent can change while the token request is in flight: send only if
-    // this device is still enrolled and sharing from the same moment.
-    {
-        let current = state.config.lock().await;
-        if current.device_id != config.device_id || current.uploads_from() != Some(since) {
-            return Ok(());
+        for batch in days.chunks(500) {
+            // Token exchange and earlier requests may outlive this opt-in.
+            {
+                let current = state.config.lock().await;
+                if current.device_id != config.device_id || current.uploads_from() != Some(since) {
+                    return Ok(());
+                }
+            }
+            let payload = EventBatchRequest {
+                events: batch.to_vec(),
+            };
+            let request_id = state
+                .record_payload(
+                    "/api/v2/monitor/agent/events",
+                    serde_json::to_value(&payload).unwrap_or_default(),
+                )
+                .await;
+            match client.ingest_events(&token.access_token, &payload).await {
+                Ok(_) => {
+                    // Do not recreate an old workspace's ledger after Disconnect wiped it.
+                    let current = state.config.lock().await;
+                    if current.device_id != config.device_id
+                        || current.uploads_from() != Some(since)
+                    {
+                        return Ok(());
+                    }
+                    let queue = runtime.queue.clone();
+                    let days = batch
+                        .iter()
+                        .map(|day| (day.app_id.clone(), day.date))
+                        .collect::<Vec<_>>();
+                    tauri::async_runtime::spawn_blocking(move || {
+                        queue.remember_uploaded_days(&days)
+                    })
+                    .await
+                    .map_err(|err| err.to_string())?
+                    .map_err(|err| err.to_string())?;
+                    drop(current);
+                    state.mark_payload_delivered(request_id).await;
+                }
+                Err(err) => return Err(call_failed(app, &device_id, err).await),
+            }
         }
     }
-
-    let payload = EventBatchRequest {
-        events: pending.clone(),
-    };
-    let request_id = state
-        .record_payload(
-            "/api/v2/monitor/agent/events",
-            serde_json::to_value(&payload).unwrap_or_default(),
-        )
-        .await;
-
-    match client.ingest_events(&token.access_token, &payload).await {
-        Ok(_result) => {
-            state.mark_payload_delivered(request_id).await;
-            let ids: Vec<uuid::Uuid> = pending.iter().map(|event| event.event_id).collect();
-            let queue = runtime.queue.clone();
-            tauri::async_runtime::spawn_blocking(move || queue.mark_uploaded(&ids))
-                .await
-                .map_err(|err| err.to_string())?
-                .map_err(|err| err.to_string())?;
-            *state.last_error.lock().await = None;
-            Ok(())
-        }
-        Err(err) => Err(call_failed(app, &device_id, err).await),
-    }
+    let ids: Vec<uuid::Uuid> = pending.iter().map(|event| event.event_id).collect();
+    let queue = runtime.queue.clone();
+    tauri::async_runtime::spawn_blocking(move || queue.mark_uploaded(&ids))
+        .await
+        .map_err(|err| err.to_string())?
+        .map_err(|err| err.to_string())?;
+    *state.last_error.lock().await = None;
+    Ok(())
 }
 
 impl AgentState {

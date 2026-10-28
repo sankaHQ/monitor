@@ -162,19 +162,20 @@ pub fn write(reports: &[ScanReport], lang: Lang) -> Result<Vec<u8>, XlsxError> {
             row += 1;
             Ok(())
         };
-        let (high, medium, low, programs, past) =
-            reports
-                .iter()
-                .map(ScanReport::counts)
-                .fold((0, 0, 0, 0, 0), |acc, c| {
-                    (
-                        acc.0 + c.high,
-                        acc.1 + c.medium,
-                        acc.2 + c.low,
-                        acc.3 + c.programs,
-                        acc.4 + c.programs_past_support,
-                    )
-                });
+        let (high, medium, low, programs, past, assessed, unknown) = reports
+            .iter()
+            .map(ScanReport::counts)
+            .fold((0, 0, 0, 0, 0, 0, 0), |acc, c| {
+                (
+                    acc.0 + c.high,
+                    acc.1 + c.medium,
+                    acc.2 + c.low,
+                    acc.3 + c.programs,
+                    acc.4 + c.programs_past_support,
+                    acc.5 + c.programs_assessed,
+                    acc.6 + c.programs_not_assessed,
+                )
+            });
         match reports {
             [one] => {
                 line(l.hostname, one.device.hostname.clone())?;
@@ -203,6 +204,8 @@ pub fn write(reports: &[ScanReport], lang: Lang) -> Result<Vec<u8>, XlsxError> {
         )?;
         line(l.programs, programs.to_string())?;
         line(l.programs_past_support, past.to_string())?;
+        line(l.programs_assessed, assessed.to_string())?;
+        line(l.programs_not_assessed, unknown.to_string())?;
         line(l.saas_found, saas.len().to_string())?;
         line(l.saas_not_allowed, not_allowed.len().to_string())?;
         if let [one] = reports {
@@ -691,6 +694,26 @@ mod tests {
 
     /// "Send an edited Excel" takes the ledger, whether the app saved it or
     /// someone filled it in, and refuses any other workbook or file.
+    #[test]
+    fn workbook_summary_carries_assessed_and_unknown_counts() {
+        let report = fixtures::windows_report();
+        for lang in [Lang::En, Lang::Ja] {
+            let bytes = write(std::slice::from_ref(&report), lang).unwrap();
+            let strings = sheet_strings(&bytes, 1);
+            let labels = copy::labels(lang);
+            let assessed = strings
+                .iter()
+                .position(|v| v == labels.programs_assessed)
+                .unwrap();
+            let unknown = strings
+                .iter()
+                .position(|v| v == labels.programs_not_assessed)
+                .unwrap();
+            assert_eq!(strings[assessed + 1], "2");
+            assert_eq!(strings[unknown + 1], "3");
+        }
+    }
+
     #[test]
     fn only_a_sanka_monitor_ledger_is_a_monitor_workbook() {
         let report = fixtures::windows_report();

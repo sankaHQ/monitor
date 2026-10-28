@@ -126,6 +126,8 @@ pub struct ReportCounts {
     pub checks_unknown: usize,
     pub programs: usize,
     pub programs_past_support: usize,
+    pub programs_assessed: usize,
+    pub programs_not_assessed: usize,
     pub saas: usize,
     pub saas_not_allowed: usize,
 }
@@ -258,6 +260,12 @@ impl ScanReport {
                 None => counts.checks_unknown += 1,
             }
         }
+        counts.programs_assessed = self
+            .software
+            .iter()
+            .filter(|record| record.lifecycle.is_some())
+            .count();
+        counts.programs_not_assessed = counts.programs - counts.programs_assessed;
         counts.saas = self.saas.len();
         counts.saas_not_allowed = self
             .saas
@@ -429,6 +437,34 @@ pub(crate) mod fixtures {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lifecycle_coverage_never_counts_unknown_software_as_assessed() {
+        let mut report = fixtures::windows_report();
+        let mixed = report.counts();
+        assert_eq!(
+            (
+                mixed.programs,
+                mixed.programs_assessed,
+                mixed.programs_not_assessed
+            ),
+            (5, 2, 3)
+        );
+        for record in &mut report.software {
+            record.lifecycle = None;
+        }
+        let unknown = report.counts();
+        assert_eq!(
+            (
+                unknown.programs_assessed,
+                unknown.programs_not_assessed,
+                unknown.programs_past_support
+            ),
+            (0, 5, 0)
+        );
+        report.software.clear();
+        assert_eq!(report.counts().programs_not_assessed, 0);
+    }
 
     #[test]
     fn findings_are_most_severe_first_and_software_carries_its_lifecycle() {
