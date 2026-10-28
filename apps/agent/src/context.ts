@@ -28,6 +28,8 @@ export type AppContext = {
   reportLang: Lang;
   theme: Theme;
   go: (screen: Screen) => void;
+  /** Bumped by Check for Updates… in the app menu; Settings checks when it changes. */
+  updateCheckRequest: number;
   /** Runs a command that answers with the status, and reloads the sent log. */
   run: (command: string, args?: Record<string, unknown>) => Promise<void>;
   refresh: () => Promise<void>;

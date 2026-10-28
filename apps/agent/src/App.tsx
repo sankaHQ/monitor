@@ -86,10 +86,13 @@ export default function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const next = await invoke<Status>("get_status");
+      const [next, sent] = await Promise.all([
+        invoke<Status>("get_status"),
+        invoke<SentPayload[]>("get_transparency"),
+      ]);
       setStatus(next);
       setFirstRun((current) => (current === null ? next.firstRun : current));
-      setPayloads(await invoke<SentPayload[]>("get_transparency"));
+      setPayloads(sent);
     } catch {
       // Status polling failures surface via lastError on the next success.
     }
@@ -97,10 +100,19 @@ export default function App() {
 
   useEffect(() => {
     refresh();
-    const timer = setInterval(refresh, 30_000);
+    // The window is often closed to the menu bar: poll only while it shows,
+    // and catch up as soon as it opens again.
+    const timer = setInterval(() => {
+      if (!document.hidden) refresh();
+    }, 30_000);
+    const onVisible = () => {
+      if (!document.hidden) refresh();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     const unlisten = listen("status-changed", () => refresh());
     return () => {
       clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
       unlisten.then((stop) => stop()).catch(() => {});
     };
   }, [refresh]);
@@ -169,8 +181,17 @@ export default function App() {
         })
         .catch(() => {});
     load();
-    const timer = setInterval(load, 30_000);
-    return () => clearInterval(timer);
+    const timer = setInterval(() => {
+      if (!document.hidden) load();
+    }, 30_000);
+    const onVisible = () => {
+      if (!document.hidden) load();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [lang, refreshScan]);
 
   const runScan = useCallback(async () => {
@@ -235,6 +256,19 @@ export default function App() {
     }
   };
 
+  // Check for Updates… in the app menu: Settings, checking at once.
+  const [updateCheckRequest, setUpdateCheckRequest] = useState(0);
+  useEffect(() => {
+    const unlisten = listen("check-for-updates", () => {
+      setScreen("settings");
+      setError(null);
+      setUpdateCheckRequest((n) => n + 1);
+    });
+    return () => {
+      unlisten.then((stop) => stop()).catch(() => {});
+    };
+  }, []);
+
   const restartToUpdate = () => {
     invoke("install_update").catch((err) => setError(String(err)));
   };
@@ -262,6 +296,7 @@ export default function App() {
     reportLang,
     theme,
     go,
+    updateCheckRequest,
     run,
     refresh,
     runScan,

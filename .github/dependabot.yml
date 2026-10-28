@@ -1,0 +1,49 @@
+# Weekly update PRs, grouped so each ecosystem is one PR. A version is only
+# proposed once it's a week old (a month for a new major version): newly
+# published releases are where a hijacked package would show up. Security
+# updates skip the schedule and the cooldown, and come as soon as an advisory
+# is published.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+      semver-major-days: 30
+    groups:
+      rust:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    commit-message:
+      prefix: chore
+      include: scope
+
+  - package-ecosystem: npm
+    directory: /apps/agent
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+      semver-major-days: 30
+    groups:
+      npm:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    commit-message:
+      prefix: chore
+      include: scope
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+      semver-major-days: 30
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci

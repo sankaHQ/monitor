@@ -137,16 +137,7 @@ pub struct ScanView {
 pub fn scan_view(report: &ScanReport, lang: Lang, policy: &crate::acks::Policy) -> ScanView {
     // A check passing because the person acknowledged it is no longer a risk.
     let mut report = report.clone();
-    let accepted: Vec<_> = report
-        .checks
-        .iter()
-        .filter(|check| {
-            check.pass == Some(false)
-                && crate::acks::evaluate(check.id, check.pass, policy).0
-                    == crate::acks::CheckState::Pass
-        })
-        .map(|check| check.id)
-        .collect();
+    let accepted = crate::acks::accepted(&report, policy);
     report
         .findings
         .retain(|finding| finding.check.is_none_or(|id| !accepted.contains(&id)));

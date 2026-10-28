@@ -16,6 +16,31 @@ mod usage;
 use tauri::{AppHandle, Manager, RunEvent};
 use tauri_plugin_autostart::MacosLauncher;
 
+/// The window opens on Settings and checks for a newer version.
+pub(crate) const CHECK_FOR_UPDATES_EVENT: &str = "check-for-updates";
+
+/// The macOS app menu with Check for Updates… after About.
+#[cfg(target_os = "macos")]
+fn app_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{Menu, MenuItem};
+    let menu = Menu::default(app)?;
+    if let Some(app_menu) = menu
+        .items()?
+        .first()
+        .and_then(|item| item.as_submenu().cloned())
+    {
+        let check = MenuItem::with_id(
+            app,
+            "check-for-updates",
+            "Check for Updates…",
+            true,
+            None::<&str>,
+        )?;
+        app_menu.insert(&check, 1)?;
+    }
+    Ok(menu)
+}
+
 pub(crate) fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -53,6 +78,12 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(agent::AgentState::default())
+        .on_menu_event(|app, event| {
+            if event.id().as_ref() == "check-for-updates" {
+                show_main_window(app);
+                let _ = tauri::Emitter::emit(app, CHECK_FOR_UPDATES_EVENT, ());
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             acks::acknowledge_check,
             agent::get_status,
@@ -99,6 +130,8 @@ fn main() {
         ])
         .setup(|app| {
             tray::build(app.handle())?;
+            #[cfg(target_os = "macos")]
+            app.set_menu(app_menu(app.handle())?)?;
 
             let handle = app.handle().clone();
             let mut config = agent::load_config(&handle);

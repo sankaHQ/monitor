@@ -1,0 +1,15 @@
+# cargo audit (CI's Dependency audit job). Every ignore names why the advisory
+# can't reach Monitor and when to look again.
+[advisories]
+ignore = [
+  # zip 4.6.1, pulled in only by tauri-plugin-updater 2.11.0: unsafe
+  # permissions and symlinks when extracting an archive. The only updater
+  # release on zip 9 is 2.14.1 (published 2026-10-28). Monitor's updates are a
+  # .app.tar.gz (macOS) and a -setup.exe (Windows), never a zip, and the
+  # updater checks each download's signature against Monitor's key before
+  # unpacking it. Take tauri-plugin-updater >= 2.14.1 once it is a week old
+  # (from 2026-11-04) and remove these three lines.
+  "RUSTSEC-2026-0367",
+  "RUSTSEC-2026-0368",
+  "RUSTSEC-2026-0369",
+]
