@@ -164,6 +164,7 @@ jobs:
           APP_CERT_PASSWORD: ${{ secrets.MACOS_APPLE_CERTIFICATE_PASSWORD }}
           INSTALLER_CERT: ${{ secrets.MACOS_INSTALLER_CERTIFICATE }}
           INSTALLER_CERT_PASSWORD: ${{ secrets.MACOS_INSTALLER_CERTIFICATE_PASSWORD }}
+          INSTALLER_SIGNING_IDENTITY: ${{ secrets.MACOS_INSTALLER_SIGNING_IDENTITY }}
         run: |
           set -euo pipefail
           keychain="$RUNNER_TEMP/monitor-signing.keychain-db"
@@ -178,7 +179,23 @@ jobs:
           rm -f "$RUNNER_TEMP/app.p12" "$RUNNER_TEMP/installer.p12"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" >/dev/null
           security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          # Developer ID certificates issued since 2021 chain to the G2 intermediate;
+          # without it in a keychain the identity isn't valid and pkgbuild can't use it.
+          curl -fsSL https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer -o "$RUNNER_TEMP/DeveloperIDG2CA.cer"
+          security import "$RUNNER_TEMP/DeveloperIDG2CA.cer" -k "$keychain" || true
           security find-identity -v "$keychain"
+          # The codesigning policy above leaves installer identities out; list every
+          # valid identity and check the installer one is there under the secret's name.
+          valid=$(security find-identity -v -p basic "$keychain")
+          if ! grep -q "Developer ID Installer" <<<"$valid"; then
+            echo "::error::MACOS_INSTALLER_CERTIFICATE has no valid Developer ID Installer identity (it may hold the Application certificate, or no private key)"
+            exit 1
+          fi
+          if ! grep -qF "\"$INSTALLER_SIGNING_IDENTITY\"" <<<"$valid"; then
+            echo "::error::MACOS_INSTALLER_SIGNING_IDENTITY doesn't match the certificate. Set it to the exact name in quotes from: security find-identity -v -p basic | grep 'Developer ID Installer'"
+            grep "Developer ID Installer" <<<"$valid" | sed -E 's/\(([A-Z0-9]{10})\)/(team \1)/'
+            exit 1
+          fi
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
