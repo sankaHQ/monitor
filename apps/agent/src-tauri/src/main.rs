@@ -113,6 +113,8 @@ fn main() {
             reports::prepare_send,
             reports::prepare_edited_excel,
             reports::send_report,
+            reports::open_report_help,
+            reports::open_report_result,
             reports::cancel_send,
             account::get_account,
             account::begin_sign_in,

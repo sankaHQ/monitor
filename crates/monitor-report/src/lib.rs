@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod copy;
 pub mod csv;
+pub mod evidence;
 pub mod html;
 pub mod xlsx;
 

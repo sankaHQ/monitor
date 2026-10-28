@@ -547,6 +547,8 @@ pub struct ReportSendFields {
     pub agent_version: Option<String>,
     /// Left out for a workbook the person edited: the app cannot vouch for it.
     pub summary: Option<ReportSummary>,
+    pub evidence: Option<String>,
+    pub purpose_version: Option<String>,
 }
 
 impl ReportSendFields {
@@ -557,6 +559,8 @@ impl ReportSendFields {
             ("note", &self.note),
             ("reportId", &self.report_id),
             ("agentVersion", &self.agent_version),
+            ("evidence", &self.evidence),
+            ("purposeVersion", &self.purpose_version),
         ]
         .into_iter()
         .filter_map(|(name, value)| {
@@ -586,6 +590,8 @@ pub struct ReportReceipt {
     pub format: String,
     pub size_bytes: u64,
     pub sha256: String,
+    #[serde(default)]
+    pub evidence_sha256: Option<String>,
 }
 
 /// A `multipart/form-data` body: the text fields, then the file, byte for
@@ -1538,12 +1544,15 @@ mod tests {
                 b"PK!",
                 &ReportSendFields {
                     note: Some("Please call".into()),
+                    evidence: Some(r#"{"schemaVersion":1}"#.into()),
+                    purpose_version: Some("monitor-report-review-v1".into()),
                     ..ReportSendFields::default()
                 },
             )
             .await
             .unwrap();
         assert_eq!((receipt.id.as_str(), receipt.size_bytes), ("r-1", 3));
+        assert_eq!(receipt.evidence_sha256, None);
 
         let request = server.join().unwrap();
         let text = String::from_utf8_lossy(&request);
@@ -1553,6 +1562,8 @@ mod tests {
         assert!(lower.contains("authorization: bearer runtime-token\r\n"));
         assert!(lower.contains("content-type: multipart/form-data; boundary=sanka-monitor-"));
         assert!(text.contains("name=\"note\"\r\n\r\nPlease call\r\n"));
+        assert!(text.contains("name=\"evidence\"\r\n\r\n{\"schemaVersion\":1}\r\n"));
+        assert!(text.contains("name=\"purposeVersion\"\r\n\r\nmonitor-report-review-v1\r\n"));
         assert!(
             text.contains("filename=\"report.xlsx\"\r\nContent-Type: application/x\r\n\r\nPK!\r\n")
         );

@@ -3,7 +3,7 @@ name = "sanka-monitor-agent"
 description = "Sanka Monitor desktop agent"
 # The agent's only version source: tauri.conf.json has none, so the bundle, the
 # updater and the check-in all read this one. Not the workspace version.
-version = "0.4.2"
+version = "0.4.3"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
