@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { STRINGS, systemLang } from "./i18n";
 import type { AppContext, Screen } from "./context";
+import { History } from "./pages/History";
 import { FirstRun } from "./pages/FirstRun";
 import { Overview, Risks, CheckPage } from "./pages/Overview";
 import { PrivacyPage } from "./pages/Privacy";
@@ -376,6 +377,8 @@ function Page({ ctx, screen }: { ctx: AppContext; screen: Screen }) {
       return <SoftwarePage ctx={ctx} />;
     case "saas":
       return <SaasPage ctx={ctx} />;
+    case "history":
+      return <History ctx={ctx} />;
     case "reports":
       return <Reports ctx={ctx} />;
     case "workspace":

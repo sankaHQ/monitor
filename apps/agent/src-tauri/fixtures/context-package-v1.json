@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "packageId": "00000000-0000-4000-8000-000000000001",
+  "workspaceId": "00000000-0000-4000-8000-000000000002",
+  "accountDeviceId": "00000000-0000-4000-8000-000000000003",
+  "audience": "company",
+  "policyVersion": 1,
+  "capturedFrom": "2026-10-29T00:00:00Z",
+  "capturedTo": "2026-10-29T01:00:00Z",
+  "consentedAt": "2026-10-29T01:00:00Z",
+  "coverage": {
+    "observedDays": 0,
+    "gaps": [
+      "insufficient_evidence"
+    ]
+  },
+  "apps": [
+    {
+      "appId": "web:google-sheets",
+      "name": "Google Sheets",
+      "serviceKey": "google-workspace",
+      "observedDays": 0
+    }
+  ],
+  "episodes": [],
+  "workflows": [
+    {
+      "id": "00000000-0000-4000-8000-000000000004",
+      "name": "合成テスト / Synthetic only",
+      "purpose": "Synthetic workflow, no personal data",
+      "appIds": [
+        "web:google-sheets"
+      ],
+      "steps": [
+        "Export a synthetic spreadsheet",
+        "Import a synthetic spreadsheet"
+      ],
+      "exceptions": "",
+      "requiredFeatures": "",
+      "frequencyPerWeek": 1e-07,
+      "minutesPerRun": -0.0,
+      "confirmed": true,
+      "ownsCustomCode": null,
+      "episodeIds": []
+    }
+  ],
+  "scan": null
+}

@@ -2355,6 +2355,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "monitor-context"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "objc2-app-kit",
+ "ring",
+ "serde",
+ "serde_json",
+ "uuid",
+ "windows",
+]
+
+[[package]]
 name = "monitor-core"
 version = "0.1.0"
 dependencies = [
@@ -2587,6 +2600,7 @@ checksum = "d49e936b501e5c5bf01fda3a9452ff86dc3ea98ad5f283e1455153142d97518c"
 dependencies = [
  "bitflags 2.13.1",
  "block2",
+ "libc",
  "objc2",
  "objc2-core-foundation",
  "objc2-foundation",
@@ -3608,9 +3622,11 @@ name = "sanka-monitor-agent"
 version = "0.4.3"
 dependencies = [
  "base64 0.22.1",
+ "block2",
  "chrono",
  "getrandom 0.4.3",
  "keyring",
+ "monitor-context",
  "monitor-core",
  "monitor-findings",
  "monitor-inventory",
@@ -3621,6 +3637,7 @@ dependencies = [
  "monitor-sync",
  "monitor-usage",
  "objc2-app-kit",
+ "objc2-foundation",
  "serde",
  "serde_json",
  "sha2",

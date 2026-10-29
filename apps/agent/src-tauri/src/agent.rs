@@ -85,6 +85,7 @@ const PERSON_VIEWS_TIMEOUT: Duration = Duration::from_secs(20);
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AccountConfig {
+    pub workspace_id: Option<String>,
     pub device_id: String,
     pub user_name: Option<String>,
     pub user_email: Option<String>,
@@ -606,8 +607,8 @@ fn keyring_entry(device_id: &str) -> Result<keyring::Entry, String> {
 
 async fn store_device_secret(device_id: String, secret: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        keyring_entry(&device_id)?
-            .set_password(&secret)
+        let entry = keyring_entry(&device_id)?;
+        crate::secure_storage::access(false, || entry.set_password(&secret))
             .map_err(|err| err.to_string())
     })
     .await
@@ -616,8 +617,8 @@ async fn store_device_secret(device_id: String, secret: String) -> Result<(), St
 
 pub(crate) async fn read_device_secret(device_id: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        keyring_entry(&device_id)?
-            .get_password()
+        let entry = keyring_entry(&device_id)?;
+        crate::secure_storage::access(false, || entry.get_password())
             .map_err(|err| format!("device credential unavailable: {err}"))
     })
     .await
@@ -626,10 +627,13 @@ pub(crate) async fn read_device_secret(device_id: String) -> Result<String, Stri
 
 /// `None` when the keychain has no credential for the device.
 async fn read_device_secret_if_any(device_id: String) -> Result<Option<String>, String> {
-    tauri::async_runtime::spawn_blocking(move || match keyring_entry(&device_id)?.get_password() {
-        Ok(secret) => Ok(Some(secret)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(err) => Err(format!("device credential unavailable: {err}")),
+    tauri::async_runtime::spawn_blocking(move || {
+        let entry = keyring_entry(&device_id)?;
+        match crate::secure_storage::access(false, || entry.get_password()) {
+            Ok(secret) => Ok(Some(secret)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(err) => Err(format!("device credential unavailable: {err}")),
+        }
     })
     .await
     .map_err(|err| err.to_string())?
@@ -637,8 +641,10 @@ async fn read_device_secret_if_any(device_id: String) -> Result<Option<String>, 
 
 async fn delete_device_secret(device_id: String) {
     let _ = tauri::async_runtime::spawn_blocking(move || {
-        keyring_entry(&device_id)
-            .and_then(|entry| entry.delete_credential().map_err(|err| err.to_string()))
+        keyring_entry(&device_id).and_then(|entry| {
+            crate::secure_storage::access(false, || entry.delete_credential())
+                .map_err(|err| err.to_string())
+        })
     })
     .await;
 }
@@ -756,6 +762,9 @@ async fn checkin_once(app: &AppHandle, with_posture: bool) -> Result<CheckinData
                     config.min_agent_version.as_deref() != Some(data.min_agent_version.as_str());
                 config.last_checkin_at = Some(Utc::now());
                 config.checkin_interval_seconds = Some(data.checkin_interval_seconds);
+                if data.kill_switch || version_below(AGENT_VERSION, Some(&data.min_agent_version)) {
+                    app.state::<crate::context_history::ContextState>().pause();
+                }
                 config.kill_switch = data.kill_switch;
                 config.min_agent_version = Some(data.min_agent_version.clone());
                 // The workspace's answer applies even if it cannot be saved.

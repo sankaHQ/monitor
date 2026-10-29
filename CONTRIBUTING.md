@@ -68,3 +68,46 @@ described in [SECURITY.md](SECURITY.md).
 Sanka Monitor is licensed under the [Apache License 2.0](LICENSE). Unless you say
 otherwise, any contribution you submit for inclusion is licensed under the same
 terms, as section 5 of the license describes.
+
+## Work History and browser bridge changes
+
+Keep `monitor-context` local-only and preserve the existing UsageEvent and report
+contracts. Add owning behavioral checks for privacy/consent, account/source
+invalidation, exact-byte transport, receipt validation and closed native frames.
+The synthetic cross-language package and Python-canonical summary hash are in
+`apps/agent/src-tauri/fixtures/`; they contain no real activity or account data.
+Native frame/relay checks live in `browser_context.rs`; desktop consent checks in
+`context_history.rs`; HTTP wire checks in `monitor-sync/src/context_tests.rs`.
+
+Do not grant TCC/UIA permissions, register a native host in a real browser profile,
+or collect real work history as part of automated verification. Use isolated
+browser profiles and synthetic provider pages. A macOS build and a Windows API
+compile harness do not qualify native-device behavior. Keep actual Chrome, Edge,
+Windows linking, lock/sleep behavior and resource-budget checks explicit in the
+change report. Public extension-store identity and publishing are separate reviews.
+
+### Synthetic History UI regressions
+
+`apps/agent/tests/history-ui.test.mjs` runs the built desktop UI in an isolated,
+headless Chromium with a synthetic Tauri boundary. It checks account-switch
+editor/history isolation, delayed action results, offline disclosure changes,
+automatic candidate review without typing, and dismissal without activity deletion;
+Rust tests own the native consent/store/scheduler behavior. It never opens a real
+browser profile or invokes native capture. The URL guard permits only HTTP
+loopback IP origins (`127.0.0.1` or `[::1]`); all other browser requests are blocked.
+
+Playwright is an **optional verification dependency**, not a runtime dependency.
+Use an existing Playwright installation with Chromium available by setting
+`MONITOR_PLAYWRIGHT_MODULE` to its absolute `index.mjs` path, or make the
+`playwright` package available to Node's module resolution. From the repo root:
+
+```bash
+npm --prefix apps/agent run build
+# Keep this task-owned preview server running in a separate terminal:
+(cd apps/agent && npm exec vite preview -- --host 127.0.0.1 --port 1439 --strictPort)
+# Point at your existing Playwright installation; no real browser profile is used.
+MONITOR_PLAYWRIGHT_MODULE=/path/to/playwright/index.mjs MONITOR_UI_URL=http://127.0.0.1:1439 node --test apps/agent/tests/history-ui.test.mjs
+```
+
+Stop the preview server when verification finishes. A passing UI test proves UI
+state transitions against synthetic inputs, not real OS capture or cloud behavior.

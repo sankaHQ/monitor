@@ -97,6 +97,7 @@ pub struct PendingSignIn {
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountView {
+    pub account_scope: String,
     pub signed_in: bool,
     pub user_name: Option<String>,
     pub user_email: Option<String>,
@@ -169,8 +170,8 @@ fn keyring_entry(device_id: &str) -> Result<keyring::Entry, String> {
 
 async fn store_secret(device_id: String, secret: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        keyring_entry(&device_id)?
-            .set_password(&secret)
+        let entry = keyring_entry(&device_id)?;
+        crate::secure_storage::access(false, || entry.set_password(&secret))
             .map_err(|err| format!("could not save the sign-in in the keychain: {err}"))
     })
     .await
@@ -179,28 +180,31 @@ async fn store_secret(device_id: String, secret: String) -> Result<(), String> {
 
 /// The secret, or `None` when this computer's keychain no longer holds it.
 async fn read_secret(device_id: String) -> Result<Option<String>, String> {
-    tauri::async_runtime::spawn_blocking(move || match keyring_entry(&device_id)?.get_password() {
-        Ok(secret) => Ok(Some(secret)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(err) => Err(format!(
-            "Sanka Monitor could not read its sign-in from the keychain ({err}). Allow access and try again."
-        )),
-    })
-    .await
-    .map_err(|err| err.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        let entry = keyring_entry(&device_id)?;
+        match crate::secure_storage::access(false, || entry.get_password()) {
+            Ok(secret) => Ok(Some(secret)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(_) => Err("Sanka Monitor cannot access the saved sign-in. Open the signed app or sign in again.".into()),
+        }
+    }).await.map_err(|err| err.to_string())?
 }
 
 async fn delete_secret(device_id: String) {
     let _ = tauri::async_runtime::spawn_blocking(move || {
-        keyring_entry(&device_id)
-            .and_then(|entry| entry.delete_credential().map_err(|err| err.to_string()))
+        keyring_entry(&device_id).and_then(|entry| {
+            crate::secure_storage::access(false, || entry.delete_credential())
+                .map_err(|err| err.to_string())
+        })
     })
     .await;
 }
 
 pub async fn account_view(app: &AppHandle) -> AccountView {
     let state: State<'_, AgentState> = app.state();
-    let account = state.config.lock().await.account.clone();
+    let config = state.config.lock().await.clone();
+    let account_scope = crate::context_history::account_scope(&config);
+    let account = config.account;
     let signing_in = state
         .pending_sign_in
         .lock()
@@ -210,6 +214,7 @@ pub async fn account_view(app: &AppHandle) -> AccountView {
     let error = state.account_error.lock().await.clone();
     match account {
         Some(account) => AccountView {
+            account_scope,
             signed_in: true,
             user_name: account.user_name,
             user_email: account.user_email,
@@ -218,6 +223,7 @@ pub async fn account_view(app: &AppHandle) -> AccountView {
             error,
         },
         None => AccountView {
+            account_scope,
             signing_in,
             error,
             ..AccountView::default()
@@ -346,7 +352,9 @@ async fn save_account(app: &AppHandle, signed_in: &DesktopSignInData) -> Result<
     let saved = {
         let mut config = state.config.lock().await;
         let mut next = config.clone();
+        app.state::<crate::context_history::ContextState>().pause();
         let previous = next.account.replace(AccountConfig {
+            workspace_id: Some(signed_in.workspace.id.clone()),
             device_id: signed_in.device_id.clone(),
             user_name: signed_in.user.name.clone(),
             user_email: signed_in.user.email.clone(),
@@ -505,6 +513,8 @@ pub async fn forget_token(app: &AppHandle) {
 
 /// Forgets the account here: the keychain secret, the names and any token.
 pub async fn forget_account(app: &AppHandle) -> Result<(), String> {
+    app.state::<crate::context_history::ContextState>()
+        .prepare_sign_out();
     let state: State<'_, AgentState> = app.state();
     let previous = {
         let mut config = state.config.lock().await;
@@ -518,14 +528,23 @@ pub async fn forget_account(app: &AppHandle) -> Result<(), String> {
     if let Some(previous) = previous {
         delete_secret(previous.device_id).await;
     }
+    let _ = app.emit(ACCOUNT_EVENT, account_view(app).await);
     Ok(())
 }
 
 /// Sign out: revokes the credential in Sanka when it can, then forgets it.
 #[tauri::command]
 pub async fn sign_out(app: AppHandle) -> Result<AccountView, String> {
-    // Without the network the secret is still deleted here, so it cannot send.
-    let _ = tokio::time::timeout(SIGN_OUT_TIMEOUT, revoke(&app)).await;
+    let context = app
+        .state::<crate::context_history::ContextState>()
+        .inner()
+        .clone();
+    // Stop local scheduling before polling the server revoke future.
+    let _ = crate::context_history::sign_out_context(
+        &context,
+        tokio::time::timeout(SIGN_OUT_TIMEOUT, revoke(&app)),
+    )
+    .await;
     forget_account(&app).await?;
     *app.state::<AgentState>().account_error.lock().await = None;
     Ok(account_view(&app).await)

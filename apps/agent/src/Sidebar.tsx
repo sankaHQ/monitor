@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { CONTEXT_STRINGS } from "./i18n";
 import lens from "./assets/lens.svg";
 import type { AppContext, Screen } from "./context";
 import { stateLabel } from "./pages/Overview";
@@ -90,6 +91,7 @@ export function Sidebar({ ctx, screen }: { ctx: AppContext; screen: Screen }) {
         {item("saas", s.nav.saas, "saas", scan ? <span className="count">{scan.saas.length}</span> : null)}
         <div className="group">{s.nav.monitor}</div>
         {item("reports", s.nav.reports, "reports")}
+        {item("history", CONTEXT_STRINGS[ctx.lang].title, "reports")}
         {item(
           "workspace",
           status.enrolled && status.workspaceName ? status.workspaceName : s.nav.workspace,

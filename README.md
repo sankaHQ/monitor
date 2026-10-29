@@ -80,9 +80,15 @@ Your browsers' history is read only if you turn on the browser check, and even
 then web addresses and page titles are never stored, written to a report or sent.
 
 It never collects window titles, document names, screen contents, keystrokes,
-the clipboard, the files on the computer, or how long any app was used. The
-**Privacy** page in the app lists everything the app has sent, exactly as sent.
-Details are in [How it works](#how-it-works) and [SECURITY.md](SECURITY.md).
+the clipboard, or the files on the computer. Existing opted-in local app usage
+stores foreground intervals for up to 14 days; connected usage uploads reduce
+these to daily app/device presence, without focus intervals or durations.
+
+The **Privacy** page shows the inventory, usage, account and report request history
+that the app records, with credentials redacted. Work History presents its reviewed
+package and delivery status separately; richer context is not copied into that
+legacy request log. Details are in [How it works](#how-it-works) and
+[SECURITY.md](SECURITY.md).
 
 ## For IT teams
 
@@ -357,3 +363,88 @@ and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Report vulnerabilities pri
 as described in [SECURITY.md](SECURITY.md). To contribute, start with
 [CONTRIBUTING.md](CONTRIBUTING.md). The Sanka API and the Monitor console are not part
 of this repository.
+
+## Private Work History (opt-in preview)
+
+Work History is an independent desktop mode, off by default. It does not require
+an account or enrollment. Choose specific apps and confirm that the OS login is
+yours, then explicitly enable/resume. Shared OS logins remain inventory-only.
+Lock, sleep, user switching, revoked secure storage and workspace pause/update
+policy stop richer capture. Unlocking never resumes it; restarting begins paused.
+Existing scans and coarse usage keep their separate settings.
+
+Initial richer profiles are **Google Sheets in Chrome or Edge** through the
+[existing Sanka Monitor extension](https://github.com/sankaHQ/monitor-extension), system TextEdit on macOS,
+and classic system Notepad on Windows. Native Excel, Store Notepad and other
+surfaces are unsupported. Native capture needs the person's OS Accessibility/UIA
+access; Monitor does not grant it. Normalized actions are inferred interactions,
+not proof that an operation completed. No titles, full URLs, documents/cells,
+input values, keystrokes, clipboard, screenshots or audio are recorded.
+
+Browse and search local app activity in Work History. Monitor detects repeated
+sequences automatically after three occurrences across two days, then asks whether
+the actions belong to one task. Confirm a prefilled task without completing a form;
+its name, purpose and exceptions can be adjusted optionally. Reviewed tasks retain
+the stable pattern identity, so polling does not create duplicates. “Not one task”
+hides that suggestion for 30 days without deleting activity. Review and dismissal
+are stored locally and do not share anything. “Save local copy” exports activity
+and tasks as unencrypted JSON to an explicitly chosen private file, without tokens
+or settings. Exported files remain where the person saved them; erasing Monitor
+history does not remove independent exports. Missing evidence is shown as missing, never as unused
+software or lack of work. Encrypted events expire after 48 hours; minimized
+occurrences after 30 days. Saved descriptions remain until deleted. The key lives
+in the current OS user's secure storage; there is no plaintext fallback. Accounts
+use separate stores, so signing in/out never reassigns unsent history. Older
+accounts without a workspace UUID must sign in again **only to share context**.
+
+To share, select apps, episodes and saved descriptions, choose personal/company,
+and inspect the exact JSON and SHA-256 preview. An optional current scan appears
+in that preview. Send obtains a grant for those exact bytes using the signed-in
+account, independently of any enrolled agent token. Unsupported servers leave the
+package local. Receipt/hash or result-origin mismatches are unconfirmed delivery.
+Personal packages stay private; company evidence is attributable and authorized
+IT administrators need an audit reason. Cloud content expires after 90 days.
+
+Daily company summaries require separate consent to a frozen selection of apps
+and descriptions, with **no episodes or scans**. Edits require revoke + a fresh
+preview. The running app attempts each UTC day idempotently; restart/sign-out
+stops local scheduling and never silently restores it. Revoke explicitly cancels
+local scheduling even offline; remote deletion is only confirmed by a server
+receipt. Local erasure and cloud deletion are separate controls. Erase-all removes
+all account namespaces and their interrupted snapshots without requiring their
+decryption keys, while refusing stores open in another process.
+
+The extension keeps the existing published Chrome Web Store identity
+`pnmoihnlnknipihnmjipgcanlifjenhh`, pinned in
+`apps/agent/src-tauri/browser-extension-identity.json`. Browser source, packaging
+and browser-boundary tests live in `sankaHQ/monitor-extension`; this repository
+does not publish a separate companion. Work History's Chrome/Edge setup button
+registers a **per-user** native host; it does not install the extension, request
+browser permissions or enable capture. macOS uses a private launcher under the
+app data directory and the selected browser's NativeMessagingHosts directory;
+Windows uses an app manifest and the selected browser's HKCU registration.
+Unrelated existing registrations are preserved. The host runs the desktop binary's
+`--context-browser-host <extension-origin>` mode (Windows also accepts Chromium's
+direct origin argument), before any app/UI startup. It relays only closed v1
+status/pause/normalized observation frames through a bounded loopback channel with
+a per-launch OS-keychain secret; it cannot fetch history or upload content.
+
+A controlled Chrome/macOS test on 2026-10-29 verified native-host setup, real Sheets
+Print/Import command capture, foreground-only filtering, browser pause and private
+JSON export. It did not prove completed business operations or a final repeated-task
+suggestion: candidate grouping requires matching occurrences across at least two days.
+The detector extracts non-overlapping consecutive repetitions within bounded
+activity sessions (up to 30 steps), retaining the two-day threshold. Store tests
+cover repeated sub-sequences, longer repeated units, retained evidence and
+explicit browser boundaries; cross-day real-device review remains unqualified. Edge, Windows,
+lock/sleep transitions, signed-upgrade keychain behavior and resource budgets remain
+unqualified. No browser-store publication or production rollout is implied.
+
+Background keychain operations never request a macOS password dialog. If secure
+storage access is unavailable, history stays paused; the person can explicitly choose
+**Work History → Settings → Secure storage access → Restore secure storage access**.
+That foreground action may request OS approval and does not resume recording.
+No encrypted history is discarded and no plaintext fallback is introduced. Browser-only
+capture does not poll native Accessibility. Ad-hoc local builds have a different signing
+identity from the Developer ID-signed release, so signing/update behavior needs its own
+release qualification.

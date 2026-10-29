@@ -3,6 +3,7 @@ resolver = "2"
 members = [
   "apps/agent/src-tauri",
   "crates/monitor-core",
+  "crates/monitor-context",
   "crates/monitor-findings",
   "crates/monitor-inventory",
   "crates/monitor-posture",

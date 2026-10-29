@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { type AppContext, workspaceName } from "../context";
+import { CONTEXT_STRINGS } from "../i18n";
 import { formatDay, formatTime, formatWhen } from "../i18n";
 import type { PersonView, PersonViews, PersonViewsError } from "../types";
 import { PageTitle, Row, Switch } from "../ui";
@@ -14,6 +15,7 @@ export function PrivacyPage({ ctx }: { ctx: AppContext }) {
   return (
     <>
       <PageTitle icon="privacy">{s.nav.privacy}</PageTitle>
+      <div className="box"><h3>{CONTEXT_STRINGS[lang].title}</h3><p>{CONTEXT_STRINGS[lang].privacy}</p><button className="button" onClick={() => ctx.go("history")}>{CONTEXT_STRINGS[lang].title}</button></div>
       <dl className="facts">
         <dt>{t.leaves}</dt>
         <dd>{status.enrolled ? t.leavesConnected(workspaceName(ctx)) : t.leavesNothing}</dd>

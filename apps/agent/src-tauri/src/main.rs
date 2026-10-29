@@ -3,13 +3,16 @@
 mod account;
 mod acks;
 mod agent;
+mod browser_context;
 mod checks;
 mod cli;
+mod context_history;
 mod enrollment;
 mod locale;
 mod reports;
 mod saas;
 mod scan;
+mod secure_storage;
 mod tray;
 mod updates;
 mod usage;
@@ -35,6 +38,9 @@ fn main() {
     // `scan`, `--help` and `--version` run without the app: no window, tray,
     // single-instance hand-off, app data or network.
     let args: Vec<String> = std::env::args().collect();
+    if let Some(code) = browser_context::run_if_host(&args) {
+        std::process::exit(code);
+    }
     let env_lang = std::env::var("LC_ALL")
         .ok()
         .or_else(|| std::env::var("LANG").ok());
@@ -60,6 +66,7 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(agent::AgentState::default())
+        .manage(context_history::ContextState::default())
         .on_menu_event(|app, event| {
             if event.id().as_ref() == CHECK_FOR_UPDATES_MENU_ID {
                 show_main_window(app);
@@ -68,6 +75,22 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             locale::set_ui_language,
+            browser_context::register_context_browser_host,
+            browser_context::open_context_browser_extension,
+            context_history::cancel_context_preview,
+            context_history::invalidate_context_selection,
+            context_history::get_context_history,
+            context_history::dismiss_context_candidate,
+            context_history::export_context_history,
+            context_history::set_context_settings,
+            context_history::restore_context_storage,
+            context_history::delete_context_history,
+            context_history::save_context_workflow,
+            context_history::prepare_context_package,
+            context_history::send_context_package,
+            context_history::delete_shared_context,
+            context_history::enable_context_summary,
+            context_history::open_context_result,
             acks::acknowledge_check,
             agent::get_status,
             agent::enroll,
@@ -160,6 +183,8 @@ fn main() {
                 }
             }
 
+            context_history::start(handle.clone());
+            browser_context::start(handle.clone());
             agent::spawn_checkin_loop(handle.clone());
             agent::spawn_revoke_loop(handle.clone());
             checks::spawn_schedule_loop(handle.clone());
@@ -199,10 +224,17 @@ fn main() {
 /// icon on a MacBook with a notch.
 #[cfg(target_os = "macos")]
 fn on_run_event(app: &AppHandle, event: RunEvent) {
+    if matches!(event, RunEvent::Exit) {
+        browser_context::shutdown(app);
+    }
     if let RunEvent::Reopen { .. } = event {
         show_main_window(app);
     }
 }
 
 #[cfg(not(target_os = "macos"))]
-fn on_run_event(_app: &AppHandle, _event: RunEvent) {}
+fn on_run_event(app: &AppHandle, event: RunEvent) {
+    if matches!(event, RunEvent::Exit) {
+        browser_context::shutdown(app);
+    }
+}
