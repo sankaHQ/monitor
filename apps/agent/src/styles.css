@@ -28,8 +28,16 @@
   --ctl: #ffffff;
   --shade: rgba(0, 0, 0, 0.18);
   color-scheme: light;
-  font-family: "Inter Variable", "Hiragino Sans", "Noto Sans JP", -apple-system, system-ui,
-    "Segoe UI", "Yu Gothic UI", "Meiryo", sans-serif;
+  font-family:
+    "Inter Variable",
+    "Hiragino Sans",
+    "Noto Sans JP",
+    -apple-system,
+    system-ui,
+    "Segoe UI",
+    "Yu Gothic UI",
+    "Meiryo",
+    sans-serif;
   font-size: 13px;
   line-height: 1.45;
   color: var(--tx);
@@ -1112,4 +1120,229 @@ textarea.input {
   gap: 10px;
   align-items: center;
   margin-top: 6px;
+}
+
+/* Work History uses the same grouped rows and controls as Reports and Settings. */
+.history-page .page-title {
+  margin-bottom: 8px;
+}
+.history-page {
+  max-width: 760px;
+}
+.history-intro,
+.history-description {
+  margin: 0 0 16px;
+  color: var(--tx2);
+}
+.history-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 16px;
+  font-size: 12px;
+}
+.history-status [role="status"] {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.history-navigation {
+  margin-bottom: 24px;
+}
+.history-page .segmented {
+  display: flex;
+  flex-wrap: wrap;
+  width: 100%;
+}
+.history-page .segmented button {
+  flex: 1 1 auto;
+  min-height: 28px;
+  color: var(--tx);
+}
+.history-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.history-heading h2,
+.history-subheading {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+.history-heading h2 {
+  margin: 0;
+}
+.history-page .list {
+  margin-bottom: 16px;
+}
+.history-check {
+  cursor: pointer;
+}
+.history-check input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  flex: none;
+  accent-color: var(--acc);
+}
+.history-group,
+.history-editor {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.history-group > legend {
+  font-weight: 600;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.history-editor > legend {
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 8px;
+}
+.history-page .field {
+  color: var(--tx);
+  margin-bottom: 16px;
+}
+.history-page .field .input {
+  width: 100%;
+  min-height: 32px;
+}
+.history-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.history-actions .history-description {
+  margin: 0;
+  flex: 1;
+}
+.history-inset {
+  padding: 8px 14px;
+  margin: 0;
+}
+.history-danger {
+  color: var(--bad);
+}
+.history-page .link {
+  min-height: 28px;
+}
+.history-page .button {
+  min-height: 28px;
+  height: auto;
+  padding-top: 4px;
+  padding-bottom: 4px;
+  white-space: normal;
+  text-align: center;
+}
+.history-empty {
+  padding: 24px;
+  text-align: center;
+}
+.history-empty > .icon {
+  width: 24px;
+  height: 24px;
+  color: var(--tx2);
+}
+.history-empty h3 {
+  font-size: 14px;
+  margin: 8px 0;
+}
+.history-empty p {
+  margin: 0 auto 16px;
+  max-width: 38ch;
+  color: var(--tx2);
+}
+.history-note {
+  margin: 0 0 16px;
+  padding: 8px 14px;
+  background: var(--grp);
+  color: var(--tx2);
+  border-radius: 7px;
+}
+.history-page details.more summary {
+  min-height: 28px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+.history-page details.more p {
+  margin: 0 0 12px;
+}
+.history-technical pre {
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 12px;
+  background: var(--grp);
+  border: 1px solid var(--sep);
+  border-radius: 7px;
+  font-size: 12px;
+}
+.history-technical .mono {
+  overflow-wrap: anywhere;
+}
+.history-page details.history-recurring {
+  margin-top: 24px;
+}
+.history-receipt {
+  margin-top: 16px;
+}
+.history-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+  gap: 16px;
+}
+@media (max-width: 680px) {
+  .history-columns {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+  .history-page .row .text {
+    flex-basis: 70%;
+  }
+  .history-page .segmented button {
+    flex-basis: 45%;
+  }
+  .history-status {
+    align-items: flex-start;
+  }
+}
+
+.history-value {
+  max-width: 60%;
+  text-align: right;
+  overflow-wrap: anywhere;
+  color: var(--tx2);
+  font-size: 12px;
+}
+.history-page .row {
+  flex-wrap: wrap;
+}
+.history-page .row .text {
+  min-width: 100px;
+}
+.history-page .row > .button {
+  flex-shrink: 0;
+}
+
+.history-preview-actions {
+  position: sticky;
+  bottom: -32px;
+  background: var(--bg);
+  padding: 12px 0;
+  border-top: 1px solid var(--sep);
+}
+.history-page :focus-visible {
+  scroll-margin-block: 64px;
 }
