@@ -1,6 +1,6 @@
 //! Bounded focused-button/menu title normalization; never retain labels or read values/documents.
 use crate::{
-    collector::{browser_app, normalize_action, sensitive_app, BrowserContext, Observation, Role},
+    collector::{native_profile, BrowserContext, Observation, Role},
     Action, ContextSettings, Gap, SessionGate,
 };
 use objc2_app_kit::NSWorkspace;
@@ -29,6 +29,7 @@ extern "C" {
     fn CFBooleanGetTypeID() -> usize;
     fn CFBooleanGetValue(value: Ref) -> bool;
     fn CFDictionaryGetValue(dictionary: Ref, key: Ref) -> Ref;
+    fn CFEqual(left: Ref, right: Ref) -> bool;
 }
 struct Owned(Ref);
 impl Drop for Owned {
@@ -121,6 +122,45 @@ fn session_available() -> bool {
                 && unsafe { CFGetTypeID(value) == CFBooleanGetTypeID() && CFBooleanGetValue(value) }
         })
 }
+fn native_ancestors(
+    focus: Ref,
+    window: Ref,
+    pid: i32,
+    deadline: Instant,
+    active: &SessionGate,
+) -> std::result::Result<Vec<String>, Gap> {
+    let mut parent = attribute(focus, "AXParent", deadline, active)?;
+    let mut roles = Vec::new();
+    for _ in 0..8 {
+        let role = role_string(parent.0, "AXRole", deadline, active)?;
+        roles.push(role.clone());
+        if role == "AXWindow" {
+            return if unsafe { CFEqual(parent.0, window) } {
+                Ok(roles)
+            } else {
+                Err(Gap::Unsupported)
+            };
+        }
+        if role == "AXApplication" {
+            let mut parent_pid = 0;
+            return if unsafe { AXUIElementGetPid(parent.0, &mut parent_pid) } == 0
+                && parent_pid == pid
+            {
+                Ok(roles)
+            } else {
+                Err(Gap::Unsupported)
+            };
+        }
+        if !matches!(
+            role.as_str(),
+            "AXToolbar" | "AXGroup" | "AXMenu" | "AXMenuBar" | "AXMenuBarItem"
+        ) {
+            return Err(Gap::Unsupported);
+        }
+        parent = attribute(parent.0, "AXParent", deadline, active)?;
+    }
+    Err(Gap::Unsupported)
+}
 pub(crate) fn observe(
     settings: &ContextSettings,
     deadline: Instant,
@@ -138,12 +178,12 @@ pub(crate) fn observe(
     let workspace = NSWorkspace::sharedWorkspace();
     let app = workspace.frontmostApplication().ok_or(Gap::Unsupported)?;
     let app_id = app.bundleIdentifier().ok_or(Gap::Unsupported)?.to_string();
-    if !settings.allows_app(&app_id) || sensitive_app(&app_id) {
-        return Err(Gap::Excluded);
-    }
-    if browser_app(&app_id) {
-        return Err(Gap::PrivateOrUnknownBrowser);
-    }
+    let location = app
+        .bundleURL()
+        .and_then(|url| url.path())
+        .ok_or(Gap::Unsupported)?
+        .to_string();
+    let profile = native_profile(settings, &app_id, &location, None)?;
     let app_name = app
         .localizedName()
         .map(|n| n.to_string())
@@ -173,10 +213,13 @@ pub(crate) fn observe(
         _ => Role::Unknown,
     };
     let action = if matches!(role, Role::Button | Role::MenuItem) {
+        let ancestors = native_ancestors(focus.0, window.0, pid, deadline, active)?;
         // The 128-byte CFString buffer rejects longer labels instead of truncating a prefix.
-        role_string(focus.0, "AXTitle", deadline, active)
-            .map(|label| normalize_action(role, &label))
-            .unwrap_or(Action::Unknown)
+        profile.read_action(
+            role,
+            &ancestors.iter().map(String::as_str).collect::<Vec<_>>(),
+            || role_string(focus.0, "AXTitle", deadline, active),
+        )?
     } else {
         Action::Unknown
     };

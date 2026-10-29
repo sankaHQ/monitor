@@ -1,13 +1,13 @@
 //! UIA normalizes bounded noneditable button/menu names; never retain labels or read values/documents.
 use crate::{
-    collector::{browser_app, normalize_action, sensitive_app, BrowserContext, Observation, Role},
+    collector::{native_profile, BrowserContext, Observation, Role},
     Action, ContextSettings, Gap, SessionGate,
 };
 use std::time::Instant;
 use windows::{
     core::PWSTR,
     Win32::{
-        Foundation::{CloseHandle, HANDLE},
+        Foundation::{CloseHandle, HANDLE, HWND},
         System::{
             Com::{
                 CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
@@ -17,6 +17,7 @@ use windows::{
                 CloseDesktop, GetUserObjectInformationW, OpenInputDesktop, DESKTOP_CONTROL_FLAGS,
                 DESKTOP_READOBJECTS, UOI_NAME,
             },
+            SystemInformation::GetSystemDirectoryW,
             Threading::{
                 OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
                 PROCESS_QUERY_LIMITED_INFORMATION,
@@ -24,9 +25,11 @@ use windows::{
         },
         UI::{
             Accessibility::{
-                CUIAutomation8, IUIAutomation2, UIA_ButtonControlTypeId, UIA_CheckBoxControlTypeId,
-                UIA_ComboBoxControlTypeId, UIA_EditControlTypeId, UIA_MenuItemControlTypeId,
-                UIA_RadioButtonControlTypeId, UIA_TextControlTypeId,
+                CUIAutomation8, IUIAutomation2, IUIAutomationElement, UIA_ButtonControlTypeId,
+                UIA_CheckBoxControlTypeId, UIA_ComboBoxControlTypeId, UIA_EditControlTypeId,
+                UIA_MenuBarControlTypeId, UIA_MenuControlTypeId, UIA_MenuItemControlTypeId,
+                UIA_PaneControlTypeId, UIA_RadioButtonControlTypeId, UIA_TextControlTypeId,
+                UIA_ToolBarControlTypeId, UIA_WindowControlTypeId,
             },
             WindowsAndMessaging::{GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId},
         },
@@ -92,6 +95,66 @@ fn timeout(
     }
     .map_err(|_| Gap::Unsupported)
 }
+fn native_element(
+    automation: &IUIAutomation2,
+    element: &IUIAutomationElement,
+    pid: u32,
+    deadline: Instant,
+    active: &SessionGate,
+) -> std::result::Result<(), Gap> {
+    timeout(automation, deadline, active)?;
+    let framework = unsafe { element.CurrentFrameworkId() }.map_err(|_| Gap::Unsupported)?;
+    if framework.len() != 5 || framework != "Win32" {
+        return Err(Gap::Unsupported);
+    }
+    timeout(automation, deadline, active)?;
+    if unsafe { element.CurrentProcessId() }.map_err(|_| Gap::Unsupported)? != pid as i32 {
+        return Err(Gap::Unsupported);
+    }
+    Ok(())
+}
+fn native_ancestors(
+    automation: &IUIAutomation2,
+    focus: &IUIAutomationElement,
+    hwnd: HWND,
+    pid: u32,
+    deadline: Instant,
+    active: &SessionGate,
+) -> std::result::Result<Vec<&'static str>, Gap> {
+    native_element(automation, focus, pid, deadline, active)?;
+    timeout(automation, deadline, active)?;
+    let walker = unsafe { automation.RawViewWalker() }.map_err(|_| Gap::Unsupported)?;
+    let mut current = focus.clone();
+    let mut roles = Vec::new();
+    for _ in 0..8 {
+        timeout(automation, deadline, active)?;
+        current = unsafe { walker.GetParentElement(&current) }.map_err(|_| Gap::Unsupported)?;
+        native_element(automation, &current, pid, deadline, active)?;
+        timeout(automation, deadline, active)?;
+        let control = unsafe { current.CurrentControlType() }.map_err(|_| Gap::Unsupported)?;
+        if control == UIA_WindowControlTypeId {
+            timeout(automation, deadline, active)?;
+            if unsafe { current.CurrentNativeWindowHandle() }.map_err(|_| Gap::Unsupported)? != hwnd
+            {
+                return Err(Gap::Unsupported);
+            }
+            roles.push("Win32Window");
+            return Ok(roles);
+        }
+        roles.push(if control == UIA_MenuControlTypeId {
+            "Win32Menu"
+        } else if control == UIA_MenuBarControlTypeId {
+            "Win32MenuBar"
+        } else if control == UIA_ToolBarControlTypeId {
+            "Win32Toolbar"
+        } else if control == UIA_PaneControlTypeId {
+            "Win32Pane"
+        } else {
+            return Err(Gap::Unsupported);
+        });
+    }
+    Err(Gap::Unsupported)
+}
 pub(crate) fn observe(
     settings: &ContextSettings,
     deadline: Instant,
@@ -131,16 +194,18 @@ pub(crate) fn observe(
         .next()
         .ok_or(Gap::Unsupported)?
         .to_ascii_lowercase();
-    if !settings.allows_app(&app_id) || sensitive_app(&app_id) {
-        return Err(Gap::Excluded);
+    let mut system_directory = [0u16; 1024];
+    let system_len = unsafe { GetSystemDirectoryW(Some(&mut system_directory)) } as usize;
+    if system_len == 0 || system_len >= system_directory.len() {
+        return Err(Gap::Unsupported);
     }
-    if browser_app(&app_id) {
-        return Err(Gap::PrivateOrUnknownBrowser);
-    }
+    let system_directory =
+        String::from_utf16(&system_directory[..system_len]).map_err(|_| Gap::Unsupported)?;
+    let profile = native_profile(settings, &app_id, &path, Some(&system_directory))?;
     let mut class = [0u16; 64];
     let class_len = unsafe { GetClassNameW(hwnd, &mut class) };
-    if class_len <= 0 || String::from_utf16_lossy(&class[..class_len as usize]) == "#32770" {
-        return Err(Gap::Excluded);
+    if class_len <= 0 || String::from_utf16_lossy(&class[..class_len as usize]) != "Notepad" {
+        return Err(Gap::Unsupported);
     }
     check(deadline, active)?;
     unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
@@ -178,14 +243,17 @@ pub(crate) fn observe(
         Role::Unknown
     };
     let action = if matches!(role, Role::Button | Role::MenuItem) {
-        timeout(&automation, deadline, active)?;
+        let ancestors = native_ancestors(&automation, &focused, hwnd, pid, deadline, active)?;
         // UIA returns a BSTR; reject oversized UTF-16 before decoding/copying its content.
-        match unsafe { focused.CurrentName() } {
-            Ok(label) if label.len() <= 127 => String::from_utf16(&label)
-                .map(|label| normalize_action(role, &label))
-                .unwrap_or(Action::Unknown),
-            _ => Action::Unknown,
-        }
+        profile.read_action(role, &ancestors, || {
+            timeout(&automation, deadline, active)?;
+            match unsafe { focused.CurrentName() } {
+                Ok(label) if label.len() <= 127 => {
+                    String::from_utf16(&label).map_err(|_| Gap::Unsupported)
+                }
+                _ => Err(Gap::Unsupported),
+            }
+        })?
     } else {
         Action::Unknown
     };

@@ -34,13 +34,95 @@ pub(crate) struct Observation {
     pub permission: bool,
     pub unlocked: bool,
 }
+enum NativeKind {
+    TextEdit,
+    ClassicNotepad,
+}
+pub(crate) struct NativeProfile(NativeKind);
+/// A user allowlist is necessary but cannot establish that a surface is native.
+pub(crate) fn native_profile(
+    settings: &ContextSettings,
+    app_id: &str,
+    location: &str,
+    system_directory: Option<&str>,
+) -> std::result::Result<NativeProfile, Gap> {
+    if !settings.allows_app(app_id) || sensitive_app(app_id) {
+        return Err(Gap::Excluded);
+    }
+    if browser_app(app_id) {
+        return Err(Gap::PrivateOrUnknownBrowser);
+    }
+    // Verified system TextEdit metadata; Windows location comes from GetSystemDirectoryW.
+    if system_directory.is_none()
+        && app_id == "com.apple.TextEdit"
+        && location == "/System/Applications/TextEdit.app"
+    {
+        return Ok(NativeProfile(NativeKind::TextEdit));
+    }
+    if app_id == "notepad.exe"
+        && system_directory.is_some_and(|directory| {
+            !directory.is_empty()
+                && location.eq_ignore_ascii_case(&format!(
+                    "{}\\notepad.exe",
+                    directory.trim_end_matches('\\')
+                ))
+        })
+    {
+        return Ok(NativeProfile(NativeKind::ClassicNotepad));
+    }
+    Err(Gap::Unsupported)
+}
+impl NativeProfile {
+    pub(crate) fn read_action(
+        &self,
+        role: Role,
+        ancestors: &[&str],
+        read: impl FnOnce() -> std::result::Result<String, Gap>,
+    ) -> std::result::Result<Action, Gap> {
+        if !matches!(role, Role::Button | Role::MenuItem) {
+            return Ok(Action::Unknown);
+        }
+        let supported = !ancestors.is_empty()
+            && ancestors.len() <= 8
+            && match (&self.0, role) {
+                (NativeKind::TextEdit, Role::Button) => {
+                    ancestors.last() == Some(&"AXWindow")
+                        && ancestors.contains(&"AXToolbar")
+                        && ancestors[..ancestors.len() - 1]
+                            .iter()
+                            .all(|r| matches!(*r, "AXGroup" | "AXToolbar"))
+                }
+                (NativeKind::TextEdit, Role::MenuItem) => {
+                    ancestors.last() == Some(&"AXApplication")
+                        && ancestors.contains(&"AXMenuBar")
+                        && ancestors[..ancestors.len() - 1]
+                            .iter()
+                            .all(|r| matches!(*r, "AXMenu" | "AXMenuBarItem" | "AXMenuBar"))
+                }
+                (NativeKind::ClassicNotepad, _) => {
+                    ancestors.last() == Some(&"Win32Window")
+                        && ancestors[..ancestors.len() - 1].iter().all(|r| {
+                            matches!(
+                                *r,
+                                "Win32Menu" | "Win32MenuBar" | "Win32Toolbar" | "Win32Pane"
+                            )
+                        })
+                }
+                _ => false,
+            };
+        if !supported {
+            return Err(Gap::Unsupported);
+        }
+        Ok(normalize_action(role, &read()?))
+    }
+}
 // Exact noneditable labels only; this is a focus interpretation, never proof of execution.
 pub(crate) fn normalize_action(role: Role, label: &str) -> Action {
     if !matches!(role, Role::Button | Role::MenuItem) || label.len() > 127 {
         return Action::Unknown;
     }
     match label {
-        "Open" => Action::Navigate,
+        "Open" | "Open..." | "Open…" => Action::Navigate,
         "Read" => Action::Read,
         "Search" => Action::Search,
         "Create" | "New" => Action::Create,
@@ -318,6 +400,89 @@ fn native_observe(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn app_allowlisting_cannot_authorize_unknown_browser_labels() {
+        let settings = ContextSettings {
+            enabled: true,
+            allowed_app_ids: vec![
+                "work-browser.exe".into(),
+                "org.example.CustomWeb".into(),
+                "com.apple.TextEdit".into(),
+                "notepad.exe".into(),
+            ],
+            allowed_domains: vec!["example.com".into()],
+            ..Default::default()
+        };
+        for (app, location) in [
+            ("work-browser.exe", "C:\\Tools\\work-browser.exe"),
+            ("org.example.CustomWeb", "/Applications/CustomWeb.app"),
+            ("com.apple.TextEdit", "/Applications/RenamedBrowser.app"),
+        ] {
+            let result = native_profile(&settings, app, location, None).and_then(|profile| {
+                profile.read_action(Role::Button, &["AXToolbar", "AXWindow"], || {
+                    panic!("unknown app must not read its label")
+                })
+            });
+            assert_eq!(result, Err(Gap::Unsupported));
+        }
+        let profile = native_profile(
+            &settings,
+            "com.apple.TextEdit",
+            "/System/Applications/TextEdit.app",
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            profile
+                .read_action(Role::Button, &["AXToolbar", "AXWindow"], || Ok(
+                    "Open".into()
+                ))
+                .unwrap(),
+            Action::Navigate
+        );
+        assert_eq!(
+            profile.read_action(
+                Role::Button,
+                &["AXGroup", "AXWebArea", "AXWindow"],
+                || panic!("embedded browser must not read its label")
+            ),
+            Err(Gap::Unsupported)
+        );
+        for (app, location) in [
+            (
+                "work-browser.exe",
+                "C:\\Windows\\System32\\work-browser.exe",
+            ),
+            ("notepad.exe", "C:\\Tools\\notepad.exe"),
+        ] {
+            assert!(
+                native_profile(&settings, app, location, Some("C:\\Windows\\System32")).is_err()
+            );
+        }
+        let profile = native_profile(
+            &settings,
+            "notepad.exe",
+            "C:\\WINDOWS\\system32\\notepad.exe",
+            Some("C:\\Windows\\System32"),
+        )
+        .unwrap();
+        assert_eq!(
+            profile
+                .read_action(
+                    Role::MenuItem,
+                    &["Win32Menu", "Win32MenuBar", "Win32Window"],
+                    || Ok("Open...".into())
+                )
+                .unwrap(),
+            Action::Navigate
+        );
+        assert_eq!(
+            profile.read_action(Role::Button, &["ChromePane", "Win32Window"], || panic!(
+                "web control must not read its label"
+            )),
+            Err(Gap::Unsupported)
+        );
+    }
     #[test]
     fn supported_button_labels_produce_distinct_inferred_same_app_steps_without_text() {
         let settings = ContextSettings {
