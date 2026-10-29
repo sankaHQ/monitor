@@ -219,6 +219,7 @@ impl RuntimeGate {
 
 #[derive(Clone, Default)]
 pub struct ContextState {
+    browser_boundary: Arc<std::sync::atomic::AtomicBool>,
     runtime: Arc<Mutex<Option<Runtime>>>,
     // Session-only, content-free intent survives deleting/reopening an account's local files.
     retained_revocations: Arc<Mutex<BTreeMap<String, RevocationScope>>>,
@@ -280,6 +281,7 @@ impl ContextState {
         generation
     }
     fn pause_for_preparation(&self) {
+        self.browser_boundary.store(true, Ordering::SeqCst);
         self.gate.pause();
         if let Ok(gate) = self.native_gate.lock() {
             if let Some(gate) = gate.as_ref() {
@@ -1343,6 +1345,7 @@ pub fn ingest_browser_observation(state: &ContextState, action: Action) -> bool 
         return false;
     }
     let Ok(mut slot) = state.runtime.try_lock() else {
+        state.browser_boundary.store(true, Ordering::SeqCst);
         return false;
     };
     let Some(r) = slot.as_mut() else { return false };
@@ -1366,8 +1369,9 @@ pub fn ingest_browser_observation(state: &ContextState, action: Action) -> bool 
         return false;
     }
     r.last_browser = Some(Instant::now());
-    r.store
-        .append(ContextEvent {
+    let boundary = state.browser_boundary.swap(false, Ordering::SeqCst);
+    let result = r.store.append_with_boundary(
+        ContextEvent {
             id: Uuid::new_v4(),
             at: Utc::now(),
             app_id: "web:google-sheets".into(),
@@ -1376,11 +1380,19 @@ pub fn ingest_browser_observation(state: &ContextState, action: Action) -> bool 
             object_category: ObjectCategory::Spreadsheet,
             provenance: Provenance::Inferred,
             gap: None,
-        })
-        .is_ok()
+        },
+        boundary,
+    );
+    let accepted = matches!(result, Ok(monitor_context::AppendOutcome::Accepted));
+    if !accepted {
+        state.pause();
+    }
+    accepted
 }
 pub fn browser_status(state: &ContextState, pause: bool) -> bool {
     if pause {
+        // Keep the boundary even when a store operation currently owns the mutex.
+        state.browser_boundary.store(true, Ordering::SeqCst);
         if let Ok(mut slot) = state.runtime.try_lock() {
             if let Some(r) = slot.as_mut() {
                 r.last_browser = None;

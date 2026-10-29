@@ -108,12 +108,22 @@ impl ContextStore {
         Ok(store)
     }
     pub fn append(&mut self, event: ContextEvent) -> Result<AppendOutcome> {
+        self.append_with_boundary(event, false)
+    }
+    pub fn append_with_boundary(
+        &mut self,
+        event: ContextEvent,
+        boundary: bool,
+    ) -> Result<AppendOutcome> {
         event.validate()?;
         ensure(
             !self.state.events.iter().any(|e| e.id == event.id),
             "duplicate context event",
         )?;
         let mut next = self.state.clone();
+        if boundary {
+            next.discontinuities.push(event.at);
+        }
         next.events.push(event.clone());
         next.events.sort_by_key(|e| (e.at, e.id));
         rebuild_occurrences(&mut next);
@@ -457,7 +467,90 @@ fn private_file(path: &Path) -> std::io::Result<File> {
     }
     options.open(path)
 }
+fn append_occurrence(
+    out: &mut Vec<Occurrence>,
+    occurrence: Occurrence,
+    events: &BTreeMap<Uuid, &ContextEvent>,
+) {
+    let steps = &occurrence.steps;
+    let same = |a: &ContextStep, b: &ContextStep| {
+        a.app_id == b.app_id
+            && a.action == b.action
+            && a.object_category == b.object_category
+            && a.provenance == b.provenance
+    };
+    let mut chunks = Vec::new();
+    let (mut prefix, mut cursor) = (0, 0);
+    // Sessions are bounded to 30 steps. Prefer the longest consecutive run;
+    // ties keep the shortest unit, and no evidence is counted twice.
+    while cursor + 4 <= steps.len() {
+        let mut best = None;
+        for width in 2..=(steps.len() - cursor) / 2 {
+            let mut end = cursor + width;
+            while end + width <= steps.len()
+                && (0..width).all(|i| same(&steps[cursor + i], &steps[end + i]))
+            {
+                end += width;
+            }
+            if end >= cursor + 2 * width && best.is_none_or(|(_, previous_end)| end > previous_end)
+            {
+                best = Some((width, end));
+            }
+        }
+        if let Some((width, end)) = best {
+            if prefix < cursor {
+                chunks.push((prefix, cursor));
+            }
+            for start in (cursor..end).step_by(width) {
+                chunks.push((start, start + width));
+            }
+            cursor = end;
+            prefix = end;
+        } else {
+            cursor += 1;
+        }
+    }
+    if prefix < steps.len() {
+        chunks.push((prefix, steps.len()));
+    }
+    if chunks.len() == 1 {
+        out.push(occurrence);
+        return;
+    }
+
+    let mut starts = Vec::new();
+    let mut previous: Option<&ContextEvent> = None;
+    for (index, id) in occurrence.event_ids.iter().enumerate() {
+        let event = events[id];
+        if previous.is_none_or(|p| {
+            p.app_id != event.app_id
+                || p.action != event.action
+                || p.object_category != event.object_category
+        }) {
+            starts.push(index);
+        }
+        previous = Some(event);
+    }
+    debug_assert_eq!(starts.len(), steps.len());
+    starts.push(occurrence.event_ids.len());
+    for (start, end) in chunks {
+        let event_ids = occurrence.event_ids[starts[start]..starts[end]].to_vec();
+        let mut steps = steps[start..end].to_vec();
+        for (ordinal, step) in steps.iter_mut().enumerate() {
+            step.ordinal = ordinal as u8;
+        }
+        out.push(Occurrence {
+            id: event_ids[0],
+            day: occurrence.day,
+            ended_at: events[event_ids.last().expect("nonempty occurrence")].at,
+            steps,
+            event_ids,
+        });
+    }
+}
+
 fn rebuild_occurrences(state: &mut State) {
+    let events: BTreeMap<_, _> = state.events.iter().map(|event| (event.id, event)).collect();
     let live: HashSet<_> = state.events.iter().map(|e| e.id).collect();
     // Preserve expired summaries; recompute only occurrences backed entirely by live events.
     state
@@ -475,7 +568,7 @@ fn rebuild_occurrences(state: &mut State) {
         }
         if event.gap.is_some() {
             if let Some(o) = current.take() {
-                state.occurrences.push(o);
+                append_occurrence(&mut state.occurrences, o, &events);
             }
             continue;
         }
@@ -494,9 +587,11 @@ fn rebuild_occurrences(state: &mut State) {
                     .is_some_and(|gap| gap.at >= o.ended_at && gap.at <= event.at)
         });
         if split {
-            state
-                .occurrences
-                .push(current.take().expect("current occurrence"));
+            append_occurrence(
+                &mut state.occurrences,
+                current.take().expect("current occurrence"),
+                &events,
+            );
         }
         let occurrence = current.get_or_insert_with(|| Occurrence {
             id: event.id,
@@ -523,7 +618,7 @@ fn rebuild_occurrences(state: &mut State) {
         occurrence.ended_at = event.at;
     }
     if let Some(o) = current {
-        state.occurrences.push(o);
+        append_occurrence(&mut state.occurrences, o, &events);
     }
 }
 
@@ -550,6 +645,108 @@ mod tests {
     fn at() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 10, 29, 10, 0, 0).unwrap()
     }
+    #[test]
+    fn continuous_repetitions_use_nonoverlapping_evidence_and_keep_the_two_day_gate() {
+        for pattern in [
+            vec![Action::Export, Action::Import],
+            vec![
+                Action::Export,
+                Action::Import,
+                Action::Export,
+                Action::Create,
+            ],
+        ] {
+            let path = path();
+            let mut store = ContextStore::open(&path, [7; 32]).unwrap();
+            let mut expected = Vec::new();
+            let day_one = std::iter::once(Action::Navigate)
+                .chain(pattern.iter().copied().cycle().take(3 * pattern.len()))
+                .chain(std::iter::once(Action::Send));
+            for (i, action) in day_one.enumerate() {
+                let mut e = event("web:google-sheets", at() + Duration::seconds(i as i64));
+                e.action = action;
+                e.object_category = ObjectCategory::Spreadsheet;
+                if i > 0 && i <= 3 * pattern.len() {
+                    expected.push(e.id);
+                }
+                store.append(e).unwrap();
+            }
+            assert!(store.candidates().is_empty());
+            for (i, action) in pattern.iter().copied().enumerate() {
+                let mut e = event(
+                    "web:google-sheets",
+                    at() + Duration::days(1) + Duration::seconds(i as i64),
+                );
+                e.action = action;
+                e.object_category = ObjectCategory::Spreadsheet;
+                expected.push(e.id);
+                store.append(e).unwrap();
+            }
+            let candidates = store.candidates();
+            assert_eq!(candidates.len(), 1);
+            let c = &candidates[0];
+            assert_eq!(c.repeat_count, 4);
+            assert_eq!(c.observed_days, 2);
+            assert_eq!(c.event_ids, expected);
+            assert_eq!(
+                c.event_ids.iter().collect::<HashSet<_>>().len(),
+                4 * pattern.len()
+            );
+            assert_eq!(
+                c.steps
+                    .iter()
+                    .map(|s| (s.ordinal, s.action))
+                    .collect::<Vec<_>>(),
+                pattern
+                    .iter()
+                    .enumerate()
+                    .map(|(i, action)| (i as u8, *action))
+                    .collect::<Vec<_>>()
+            );
+            let id = c.id;
+            drop(store);
+            let mut store = ContextStore::open(&path, [7; 32]).unwrap();
+            assert_eq!(store.candidates()[0].id, id);
+            store.prune(at() + Duration::days(4)).unwrap();
+            let retained = store.candidates();
+            assert_eq!(retained[0].repeat_count, 4);
+            assert!(retained[0].evidence_expired);
+            drop(store);
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn browser_boundaries_prevent_patterns_across_unobserved_activity() {
+        let path = path();
+        let mut store = ContextStore::open(&path, [7; 32]).unwrap();
+        for day in 0..2 {
+            for (i, action) in [
+                Action::Export,
+                Action::Import,
+                Action::Export,
+                Action::Import,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let mut e = event(
+                    "web:google-sheets",
+                    at() + Duration::days(day) + Duration::seconds(i as i64),
+                );
+                e.action = action;
+                store.append_with_boundary(e, true).unwrap();
+            }
+        }
+        assert_eq!(store.events().len(), 8);
+        assert!(store.candidates().is_empty());
+        drop(store);
+        let store = ContextStore::open(&path, [7; 32]).unwrap();
+        assert!(store.candidates().is_empty());
+        drop(store);
+        std::fs::remove_file(path).unwrap();
+    }
+
     #[test]
     fn encrypted_reopen_authenticates_and_never_writes_plaintext() {
         let path = path();

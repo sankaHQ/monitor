@@ -433,8 +433,10 @@ A controlled Chrome/macOS test on 2026-10-29 verified native-host setup, real Sh
 Print/Import command capture, foreground-only filtering, browser pause and private
 JSON export. It did not prove completed business operations or a final repeated-task
 suggestion: candidate grouping requires matching occurrences across at least two days.
-The detector currently compares bounded activity-session signatures; repeated
-subsequences within a continuous session still need qualification. Edge, Windows,
+The detector extracts non-overlapping consecutive repetitions within bounded
+activity sessions (up to 30 steps), retaining the two-day threshold. Store tests
+cover repeated sub-sequences, longer repeated units, retained evidence and
+explicit browser boundaries; cross-day real-device review remains unqualified. Edge, Windows,
 lock/sleep transitions, signed-upgrade keychain behavior and resource budgets remain
 unqualified. No browser-store publication or production rollout is implied.
 
