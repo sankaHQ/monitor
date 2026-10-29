@@ -1,7 +1,7 @@
-//! UIA reads only control type/password flag; never Name, Value, Text, document or URL.
+//! UIA normalizes bounded noneditable button/menu names; never retain labels or read values/documents.
 use crate::{
-    collector::{browser_app, sensitive_app, BrowserContext, Observation, Role},
-    ContextSettings, Gap, SessionGate,
+    collector::{browser_app, normalize_action, sensitive_app, BrowserContext, Observation, Role},
+    Action, ContextSettings, Gap, SessionGate,
 };
 use std::time::Instant;
 use windows::{
@@ -25,8 +25,8 @@ use windows::{
         UI::{
             Accessibility::{
                 CUIAutomation8, IUIAutomation2, UIA_ButtonControlTypeId, UIA_CheckBoxControlTypeId,
-                UIA_ComboBoxControlTypeId, UIA_EditControlTypeId, UIA_RadioButtonControlTypeId,
-                UIA_TextControlTypeId,
+                UIA_ComboBoxControlTypeId, UIA_EditControlTypeId, UIA_MenuItemControlTypeId,
+                UIA_RadioButtonControlTypeId, UIA_TextControlTypeId,
             },
             WindowsAndMessaging::{GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId},
         },
@@ -157,28 +157,37 @@ pub(crate) fn observe(
         return Err(Gap::Unsupported);
     }
     timeout(&automation, deadline, active)?;
-    if unsafe { focused.CurrentIsPassword() }
+    let password = unsafe { focused.CurrentIsPassword() }
         .map_err(|_| Gap::Unsupported)?
-        .as_bool()
-    {
-        return Err(Gap::Excluded);
-    }
+        .as_bool();
     timeout(&automation, deadline, active)?;
     let control = unsafe { focused.CurrentControlType() }.map_err(|_| Gap::Unsupported)?;
-    let role = if [
-        UIA_ButtonControlTypeId,
-        UIA_CheckBoxControlTypeId,
-        UIA_RadioButtonControlTypeId,
-    ]
-    .contains(&control)
-    {
+    let role = if password {
+        Role::Password
+    } else if control == UIA_ButtonControlTypeId {
         Role::Button
+    } else if control == UIA_MenuItemControlTypeId {
+        Role::MenuItem
+    } else if [UIA_CheckBoxControlTypeId, UIA_RadioButtonControlTypeId].contains(&control) {
+        Role::Toggle
     } else if control == UIA_TextControlTypeId {
         Role::StaticText
     } else if [UIA_EditControlTypeId, UIA_ComboBoxControlTypeId].contains(&control) {
         Role::Editable
     } else {
         Role::Unknown
+    };
+    let action = if matches!(role, Role::Button | Role::MenuItem) {
+        timeout(&automation, deadline, active)?;
+        // UIA returns a BSTR; reject oversized UTF-16 before decoding/copying its content.
+        match unsafe { focused.CurrentName() } {
+            Ok(label) if label.len() <= 127 => String::from_utf16(&label)
+                .map(|label| normalize_action(role, &label))
+                .unwrap_or(Action::Unknown),
+            _ => Action::Unknown,
+        }
+    } else {
+        Action::Unknown
     };
     check(deadline, active)?;
     if !unlocked_desktop() || unsafe { GetForegroundWindow() } != hwnd {
@@ -188,6 +197,7 @@ pub(crate) fn observe(
         app_name: app_id.clone(),
         app_id,
         role,
+        action,
         browser: BrowserContext::NotBrowser,
         permission: true,
         unlocked: true,

@@ -1,7 +1,7 @@
-//! Focused AX role only: never AXValue, AXTitle, AXDescription, children or URL.
+//! Bounded focused-button/menu title normalization; never retain labels or read values/documents.
 use crate::{
-    collector::{browser_app, sensitive_app, BrowserContext, Observation, Role},
-    ContextSettings, Gap, SessionGate,
+    collector::{browser_app, normalize_action, sensitive_app, BrowserContext, Observation, Role},
+    Action, ContextSettings, Gap, SessionGate,
 };
 use objc2_app_kit::NSWorkspace;
 use std::{
@@ -163,12 +163,22 @@ pub(crate) fn observe(
         return Err(Gap::Unsupported);
     }
     let role = match role_string(focus.0, "AXRole", deadline, active)?.as_str() {
-        "AXButton" | "AXCheckBox" | "AXRadioButton" | "AXMenuItem" => Role::Button,
+        "AXButton" => Role::Button,
+        "AXMenuItem" => Role::MenuItem,
+        "AXCheckBox" | "AXRadioButton" => Role::Toggle,
         "AXStaticText" => Role::StaticText,
         "AXTextField" | "AXTextArea" | "AXComboBox" => Role::Editable,
         "AXSecureTextField" => Role::Password,
         // Web areas, documents, arbitrary custom controls and remote surfaces have no safe adapter.
         _ => Role::Unknown,
+    };
+    let action = if matches!(role, Role::Button | Role::MenuItem) {
+        // The 128-byte CFString buffer rejects longer labels instead of truncating a prefix.
+        role_string(focus.0, "AXTitle", deadline, active)
+            .map(|label| normalize_action(role, &label))
+            .unwrap_or(Action::Unknown)
+    } else {
+        Action::Unknown
     };
     check(deadline, active)?;
     if !unsafe { AXIsProcessTrusted() } {
@@ -185,6 +195,7 @@ pub(crate) fn observe(
         app_id,
         app_name,
         role,
+        action,
         browser: BrowserContext::NotBrowser,
         permission: true,
         unlocked: true,

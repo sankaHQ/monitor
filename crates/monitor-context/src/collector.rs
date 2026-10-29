@@ -12,6 +12,8 @@ use std::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Role {
     Button,
+    MenuItem,
+    Toggle,
     StaticText,
     Editable,
     Password,
@@ -27,9 +29,28 @@ pub(crate) struct Observation {
     pub app_id: String,
     pub app_name: String,
     pub role: Role,
+    pub action: Action,
     pub browser: BrowserContext,
     pub permission: bool,
     pub unlocked: bool,
+}
+// Exact noneditable labels only; this is a focus interpretation, never proof of execution.
+pub(crate) fn normalize_action(role: Role, label: &str) -> Action {
+    if !matches!(role, Role::Button | Role::MenuItem) || label.len() > 127 {
+        return Action::Unknown;
+    }
+    match label {
+        "Open" => Action::Navigate,
+        "Read" => Action::Read,
+        "Search" => Action::Search,
+        "Create" | "New" => Action::Create,
+        "Edit" => Action::Edit,
+        "Export" | "Export..." | "Export…" => Action::Export,
+        "Import" | "Import..." | "Import…" => Action::Import,
+        "Approve" => Action::Approve,
+        "Send" => Action::Send,
+        _ => Action::Unknown,
+    }
 }
 fn filter_observation(
     settings: &ContextSettings,
@@ -176,17 +197,9 @@ impl Collector {
         {
             return Ok(None);
         }
-        // A timed-out provider retains at most one worker and one pending result, never a growing queue.
-        if let Some(pending) = &self.pending {
-            match pending.try_recv() {
-                Err(mpsc::TryRecvError::Empty) => {
-                    self.gap = Some(Gap::Unsupported);
-                    return Ok(None);
-                }
-                _ => {
-                    self.pending = None;
-                }
-            }
+        if self.provider_busy() {
+            self.gap = Some(Gap::Unsupported);
+            return Ok(None);
         }
         let (send, receive) = mpsc::sync_channel(1);
         let deadline = Instant::now() + StdDuration::from_millis(CAPTURE_DEADLINE_MS);
@@ -199,29 +212,16 @@ impl Collector {
                 let result = native_observe(&settings_snapshot, deadline, &active);
                 let _ = send.send(result);
             })?;
-        let result = receive.recv_timeout(deadline.saturating_duration_since(Instant::now()));
-        if !self.active.accepts(generation) {
-            self.previous = None;
-            self.gap = Some(Gap::Locked);
+        let Some(observation) = self.finish_read(receive, generation, deadline) else {
             return Ok(None);
-        }
-        let observation = match result {
-            Ok(Ok(observation)) => observation,
-            Ok(Err(gap)) => {
-                self.previous = None;
-                self.gap = Some(gap);
-                return Ok(None);
-            }
-            Err(RecvTimeoutError::Timeout) => {
-                self.pending = Some(receive);
-                self.gap = Some(Gap::Unsupported);
-                return Ok(None);
-            }
-            Err(RecvTimeoutError::Disconnected) => {
-                self.gap = Some(Gap::Unsupported);
-                return Ok(None);
-            }
         };
+        self.accept_observation(settings, observation)
+    }
+    fn accept_observation(
+        &mut self,
+        settings: &ContextSettings,
+        observation: Observation,
+    ) -> Result<Option<ContextEvent>> {
         if let Err(gap) = filter_observation(settings, &observation) {
             self.previous = None;
             self.gap = Some(gap);
@@ -236,15 +236,63 @@ impl Collector {
             at: Utc::now(),
             app_id: observation.app_id.clone(),
             app_name: observation.app_name.clone(),
-            action: Action::Unknown,
+            action: observation.action,
             object_category: ObjectCategory::Unknown,
-            provenance: Provenance::Observed,
+            provenance: if observation.action == Action::Unknown {
+                Provenance::Observed
+            } else {
+                Provenance::Inferred
+            },
             gap: None,
         };
         event.validate()?;
         self.previous = Some(observation);
         self.last_accepted = Some(Instant::now());
         Ok(Some(event))
+    }
+    // A timed-out provider retains one worker/result; late observations are discarded.
+    fn provider_busy(&mut self) -> bool {
+        let Some(pending) = &self.pending else {
+            return false;
+        };
+        if matches!(pending.try_recv(), Err(mpsc::TryRecvError::Empty)) {
+            return true;
+        }
+        self.pending = None;
+        false
+    }
+    fn finish_read(
+        &mut self,
+        receive: Receiver<std::result::Result<Observation, Gap>>,
+        generation: u64,
+        deadline: Instant,
+    ) -> Option<Observation> {
+        let result = receive.recv_timeout(deadline.saturating_duration_since(Instant::now()));
+        if matches!(result, Err(RecvTimeoutError::Timeout)) {
+            self.pending = Some(receive);
+        }
+        if !self.active.accepts(generation) {
+            self.previous = None;
+            self.gap = Some(Gap::Locked);
+            return None;
+        }
+        let observation = match result {
+            Ok(Ok(observation)) => observation,
+            Ok(Err(gap)) => {
+                self.previous = None;
+                self.gap = Some(gap);
+                return None;
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                self.gap = Some(Gap::Unsupported);
+                return None;
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                self.gap = Some(Gap::Unsupported);
+                return None;
+            }
+        };
+        Some(observation)
     }
 }
 fn native_observe(
@@ -271,6 +319,125 @@ fn native_observe(
 mod tests {
     use super::*;
     #[test]
+    fn supported_button_labels_produce_distinct_inferred_same_app_steps_without_text() {
+        let settings = ContextSettings {
+            enabled: true,
+            allowed_app_ids: vec!["safe".into()],
+            ..Default::default()
+        };
+        let mut collector = Collector::default();
+        let path =
+            std::env::temp_dir().join(format!("context-normalization-{}.enc", Uuid::new_v4()));
+        let mut store = ContextStore::open(&path, [7; 32]).unwrap();
+        let start: DateTime<Utc> = "2026-10-28T10:00:00Z".parse().unwrap();
+        for minutes in [0, 10, 1440] {
+            for (i, label) in ["Read", "Export", "Import"].iter().enumerate() {
+                let observation = Observation {
+                    app_id: "safe".into(),
+                    app_name: "Synthetic app".into(),
+                    role: Role::Button,
+                    action: normalize_action(Role::Button, label),
+                    browser: BrowserContext::NotBrowser,
+                    permission: true,
+                    unlocked: true,
+                };
+                let mut event = collector
+                    .accept_observation(&settings, observation.clone())
+                    .unwrap()
+                    .expect("action changes must survive same-app deduplication");
+                assert!(collector
+                    .accept_observation(&settings, observation)
+                    .unwrap()
+                    .is_none());
+                event.at = start + Duration::minutes(minutes) + Duration::seconds(i as i64);
+                store.append(event).unwrap();
+            }
+        }
+        let candidates = store.candidates();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(
+            candidates[0]
+                .steps
+                .iter()
+                .map(|s| s.action)
+                .collect::<Vec<_>>(),
+            [Action::Read, Action::Export, Action::Import]
+        );
+        assert!(candidates[0]
+            .steps
+            .iter()
+            .all(|s| s.provenance == Provenance::Inferred));
+        let secret = "Export private-synthetic-name";
+        for role in [
+            Role::Editable,
+            Role::Password,
+            Role::StaticText,
+            Role::Unknown,
+        ] {
+            assert_eq!(normalize_action(role, "Export"), Action::Unknown);
+        }
+        assert_eq!(normalize_action(Role::Button, secret), Action::Unknown);
+        assert_eq!(
+            normalize_action(Role::Button, &"Export".repeat(30)),
+            Action::Unknown
+        );
+        let unknown = Observation {
+            app_id: "safe".into(),
+            app_name: "Synthetic app".into(),
+            role: Role::Button,
+            action: normalize_action(Role::Button, secret),
+            browser: BrowserContext::NotBrowser,
+            permission: true,
+            unlocked: true,
+        };
+        let unknown = collector
+            .accept_observation(&settings, unknown)
+            .unwrap()
+            .unwrap();
+        assert_eq!(unknown.action, Action::Unknown);
+        store.append(unknown).unwrap();
+        assert!(!serde_json::to_string(&store.events())
+            .unwrap()
+            .contains("private-synthetic-name"));
+        drop(store);
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn paused_timeout_keeps_the_stalled_worker_until_its_result_is_discarded() {
+        let mut collector = Collector::default();
+        collector.set_session_active(true);
+        let generation = collector.active.generation();
+        let (send, receive) = mpsc::sync_channel(1);
+        let (release, stalled) = mpsc::sync_channel(1);
+        let worker = std::thread::spawn(move || {
+            stalled.recv().unwrap();
+            let _ = send.send(Ok(Observation {
+                app_id: "safe".into(),
+                app_name: "Synthetic late app".into(),
+                role: Role::Button,
+                action: Action::Export,
+                browser: BrowserContext::NotBrowser,
+                permission: true,
+                unlocked: true,
+            }));
+        });
+        collector.session_gate().pause();
+        assert!(collector
+            .finish_read(receive, generation, Instant::now())
+            .is_none());
+        collector.set_session_active(true);
+        let busy = collector.provider_busy();
+        // Release/join even on failure; the regression must not leak its synthetic worker.
+        release.send(()).unwrap();
+        worker.join().unwrap();
+        assert!(
+            busy,
+            "resume must not admit a second provider while the first is stalled"
+        );
+        assert!(!collector.provider_busy());
+        assert!(collector.previous.is_none());
+    }
+    #[test]
     fn pause_handle_invalidates_reads_even_after_explicit_resume() {
         let mut collector = Collector::default();
         let gate = collector.session_gate();
@@ -296,6 +463,7 @@ mod tests {
             app_id: "safe".into(),
             app_name: "Synthetic app".into(),
             role: Role::Button,
+            action: Action::Unknown,
             browser: BrowserContext::NotBrowser,
             permission: true,
             unlocked: true,

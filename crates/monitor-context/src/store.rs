@@ -48,6 +48,8 @@ struct State {
     occurrences: Vec<Occurrence>,
     workflows: Vec<ContextWorkflow>,
     capacity_gap: Option<ContextEvent>,
+    #[serde(default)]
+    discontinuities: Vec<DateTime<Utc>>,
 }
 
 pub struct ContextStore {
@@ -100,6 +102,7 @@ impl ContextStore {
         if path.exists() {
             store.state = store.read()?;
         }
+        store.cleanup_orphans()?;
         Ok(store)
     }
     pub fn append(&mut self, event: ContextEvent) -> Result<AppendOutcome> {
@@ -115,7 +118,9 @@ impl ContextStore {
         match self.write(&next, CAPACITY_RESERVE) {
             Err(ContextError::Capacity) => {
                 let mut gap = self.state.clone();
-                gap.capacity_gap = Some(ContextEvent::coverage_gap(event.at, Gap::Capacity));
+                // Retain the first missed observation and its selectable identity until deletion/pruning.
+                gap.capacity_gap
+                    .get_or_insert_with(|| ContextEvent::coverage_gap(event.at, Gap::Capacity));
                 self.write(&gap, 0)?;
                 self.state = gap;
                 return Ok(AppendOutcome::Capacity);
@@ -137,14 +142,31 @@ impl ContextStore {
         let ids: HashSet<_> = ids.iter().copied().collect();
         let mut next = self.state.clone();
         let before = next.events.len() + usize::from(next.capacity_gap.is_some());
+        let invalidated: HashSet<_> = next
+            .occurrences
+            .iter()
+            .filter(|o| o.event_ids.iter().any(|id| ids.contains(id)))
+            .flat_map(|o| o.event_ids.iter().copied())
+            .collect();
+        // Keep only content-free boundaries, including the live tail of expired/deleted evidence.
+        next.discontinuities.extend(
+            next.events
+                .iter()
+                .filter(|e| ids.contains(&e.id) || invalidated.contains(&e.id))
+                .map(|e| e.at),
+        );
         next.events.retain(|e| !ids.contains(&e.id));
         if next
             .capacity_gap
             .as_ref()
             .is_some_and(|e| ids.contains(&e.id))
         {
+            next.discontinuities
+                .push(next.capacity_gap.as_ref().expect("selected gap").at);
             next.capacity_gap = None;
         }
+        next.discontinuities.sort_unstable();
+        next.discontinuities.dedup();
         let removed: HashSet<_> = next
             .occurrences
             .iter()
@@ -171,6 +193,8 @@ impl ContextStore {
         let mut next = self.state.clone();
         let before = next.events.len();
         next.events.retain(|e| e.at >= now - Duration::hours(48));
+        next.discontinuities
+            .retain(|at| *at >= now - Duration::hours(48));
         next.occurrences
             .retain(|o| o.ended_at >= now - Duration::days(30));
         let live: HashSet<_> = next.events.iter().map(|e| e.id).collect();
@@ -304,6 +328,8 @@ impl ContextStore {
         Ok(state)
     }
     fn write(&self, state: &State, reserve: usize) -> Result<()> {
+        // The store lock also owns this exact file's temporary namespace.
+        self.cleanup_orphans()?;
         let mut plaintext = serde_json::to_vec(state)?;
         if plaintext.len() + ENVELOPE_BYTES + reserve > self.max_bytes {
             return Err(ContextError::Capacity);
@@ -319,7 +345,9 @@ impl ContextStore {
                 &mut plaintext,
             )
             .map_err(|_| ContextError::Encryption)?;
-        let temp = self.path.with_extension(format!("{}.tmp", Uuid::new_v4()));
+        let mut name = self.temp_prefix()?;
+        name.push(format!("{}.tmp", Uuid::new_v4()));
+        let temp = self.path.with_file_name(name);
         let result = (|| -> Result<()> {
             let mut file = private_file(&temp)?;
             file.write_all(HEADER)?;
@@ -341,6 +369,52 @@ impl ContextStore {
             let _ = fs::remove_file(temp);
         }
         result
+    }
+    fn temp_prefix(&self) -> Result<std::ffi::OsString> {
+        let mut name = self
+            .path
+            .file_name()
+            .ok_or(ContextError::Invalid("invalid context path"))?
+            .to_os_string();
+        name.push(".context-tmp.");
+        Ok(name)
+    }
+    fn cleanup_orphans(&self) -> Result<()> {
+        let parent = self
+            .path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let prefix = self.temp_prefix()?;
+        let mut removed = false;
+        for entry in fs::read_dir(parent)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            // Compare OS bytes first: lossy Unicode filenames must not alias another store.
+            let Some(suffix) = name
+                .as_encoded_bytes()
+                .strip_prefix(prefix.as_encoded_bytes())
+            else {
+                continue;
+            };
+            let Ok(suffix) = std::str::from_utf8(suffix) else {
+                continue;
+            };
+            let Some(id) = suffix.strip_suffix(".tmp") else {
+                continue;
+            };
+            if Uuid::parse_str(id).is_ok() {
+                fs::remove_file(entry.path())?;
+                removed = true;
+            }
+        }
+        #[cfg(unix)]
+        if removed {
+            File::open(parent)?.sync_all()?;
+        }
+        #[cfg(not(unix))]
+        let _ = removed;
+        Ok(())
     }
 }
 fn private_file(path: &Path) -> std::io::Result<File> {
@@ -377,7 +451,17 @@ fn rebuild_occurrences(state: &mut State) {
         }
         let day = event.at.with_timezone(&Local).date_naive();
         let split = current.as_ref().is_some_and(|o| {
-            event.at - o.ended_at > Duration::minutes(5) || o.day != day || o.steps.len() >= 30
+            event.at - o.ended_at > Duration::minutes(5)
+                || o.day != day
+                || o.steps.len() >= 30
+                || state
+                    .discontinuities
+                    .iter()
+                    .any(|at| *at >= o.ended_at && *at <= event.at)
+                || state
+                    .capacity_gap
+                    .as_ref()
+                    .is_some_and(|gap| gap.at >= o.ended_at && gap.at <= event.at)
         });
         if split {
             state
@@ -453,6 +537,41 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
     #[test]
+    fn crash_snapshots_are_removed_on_open_and_erasure_without_touching_other_stores() {
+        let directory = path().with_extension("directory");
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("history.enc");
+        let orphan = directory.join(format!("history.enc.context-tmp.{}.tmp", Uuid::new_v4()));
+        let unrelated = directory.join(format!("history.other.context-tmp.{}.tmp", Uuid::new_v4()));
+        let mut store = ContextStore::open(&path, [7; 32]).unwrap();
+        let sample = event("private-synthetic-source", at());
+        store.append(sample.clone()).unwrap();
+        // This is the complete authenticated snapshot from a real write, not a fake header.
+        std::fs::copy(&path, &orphan).unwrap();
+        std::fs::copy(&path, &unrelated).unwrap();
+        drop(store);
+        let mut store = ContextStore::open(&path, [7; 32]).unwrap();
+        assert_eq!(store.events(), vec![sample]);
+        assert!(!orphan.exists());
+        assert!(unrelated.exists());
+        for operation in 0..3 {
+            std::fs::copy(&unrelated, &orphan).unwrap();
+            match operation {
+                0 => {
+                    store.prune(at() + Duration::days(31)).unwrap();
+                }
+                1 => {
+                    store.delete(&[]).unwrap();
+                }
+                _ => store.clear().unwrap(),
+            }
+            assert!(!orphan.exists());
+            assert!(unrelated.exists());
+        }
+        drop(store);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
     fn candidates_require_three_sequences_two_days_and_deleted_evidence_disappears() {
         let path = path();
         let mut store = ContextStore::open(&path, [7; 32]).unwrap();
@@ -515,6 +634,42 @@ mod tests {
         assert!(store.candidates().is_empty());
         drop(store);
         std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn deleting_content_or_a_gap_never_joins_the_remaining_sides() {
+        for delete_gap in [false, true] {
+            let path = path();
+            let mut store = ContextStore::open(&path, [7; 32]).unwrap();
+            let mut ids = Vec::new();
+            for minutes in [0, 60, 1440] {
+                let start = at() + Duration::minutes(minutes);
+                store.append(event("a", start)).unwrap();
+                let middle = if delete_gap {
+                    ContextEvent::coverage_gap(start + Duration::seconds(1), Gap::Excluded)
+                } else {
+                    event("b", start + Duration::seconds(1))
+                };
+                ids.push(middle.id);
+                store.append(middle).unwrap();
+                store
+                    .append(event("c", start + Duration::seconds(2)))
+                    .unwrap();
+            }
+            assert_eq!(store.candidates().len(), usize::from(!delete_gap));
+            store.delete(&ids).unwrap();
+            assert!(store.candidates().is_empty());
+            drop(store);
+            let mut store = ContextStore::open(&path, [7; 32]).unwrap();
+            store
+                .append(event("unrelated", at() + Duration::days(2)))
+                .unwrap();
+            assert!(
+                store.candidates().is_empty(),
+                "deletion must not create A-to-C evidence, gap={delete_gap}"
+            );
+            drop(store);
+            std::fs::remove_file(path).unwrap();
+        }
     }
     #[test]
     fn partial_expiry_never_reuses_an_occurrence_tail_as_new_evidence() {
@@ -591,6 +746,12 @@ mod tests {
             .into_iter()
             .find(|e| e.gap == Some(Gap::Capacity))
             .unwrap();
+        assert_eq!(
+            store
+                .append(event(&"c".repeat(200), at() + Duration::seconds(2)))
+                .unwrap(),
+            AppendOutcome::Capacity
+        );
         assert_eq!(
             store
                 .events()
