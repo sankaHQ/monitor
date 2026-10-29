@@ -118,6 +118,11 @@ struct Recurring {
     day: Option<chrono::NaiveDate>,
     identity: Identity,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RevocationScope {
+    Summaries,
+    All,
+}
 struct Runtime {
     identity: Identity,
     store: ContextStore,
@@ -131,9 +136,34 @@ struct Runtime {
     error: Option<String>,
     personal_os_login: bool,
     key_fingerprint: String,
-    revocation_pending: bool,
+    pending_revocation: Option<RevocationScope>,
 }
 impl Runtime {
+    fn revocation_pending(&self) -> bool {
+        self.pending_revocation.is_some()
+    }
+    fn require_revocation(&mut self, scope: RevocationScope) {
+        self.pending_revocation = Some(match (self.pending_revocation, scope) {
+            (Some(RevocationScope::All), _) | (_, RevocationScope::All) => RevocationScope::All,
+            _ => RevocationScope::Summaries,
+        });
+        let message = match self.pending_revocation {
+            Some(RevocationScope::All) => "All context revocation remains pending; previously shared content may still be on the server",
+            _ => "Daily sharing stopped locally; remote revocation pending",
+        };
+        self.error = Some(message.into());
+    }
+    fn acknowledge_revocation(&mut self, scope: RevocationScope) {
+        let covered = match self.pending_revocation {
+            None => false,
+            Some(RevocationScope::Summaries) => true,
+            Some(RevocationScope::All) => scope == RevocationScope::All,
+        };
+        if covered {
+            self.pending_revocation = None;
+            self.error = None;
+        }
+    }
     fn invalidate(&mut self) {
         self.authority.invalidate();
         self.preview = None;
@@ -296,7 +326,7 @@ async fn with_runtime<T: Send + 'static>(
                 error: None,
                 personal_os_login: false,
                 key_fingerprint: hash(&secret),
-                revocation_pending: false,
+                pending_revocation: None,
             });
         }
         let r = slot.as_mut().ok_or("Context unavailable")?;
@@ -357,7 +387,7 @@ pub async fn get_context_history(app: AppHandle, account_scope: String) -> Resul
             candidates: r.store.candidates(),
             workflows: r.store.workflows(),
             recurring: r.recurring.is_some(),
-            revocation_pending: r.revocation_pending,
+            revocation_pending: r.revocation_pending(),
             error: r.error.clone(),
             gap: r.last_gap,
         })
@@ -734,7 +764,7 @@ async fn request<T: DeserializeOwned>(
             let scope = id.scope.clone();
             with_runtime(app, move |r| {
                 let preview = r.preview.as_ref().ok_or("Preview was cancelled")?;
-                if r.revocation_pending
+                if r.revocation_pending()
                     || !r.personal_os_login
                     || !r.authority.permits(preview, &scope)
                 {
@@ -751,7 +781,7 @@ async fn request<T: DeserializeOwned>(
                 .map_err(|_| "Context unavailable")?
                 .as_ref()
                 .is_some_and(|r| {
-                    !r.revocation_pending
+                    !r.revocation_pending()
                         && r.recurring.as_ref().is_some_and(|g| {
                             g.selection_generation
                                 == state.sharing_generation.load(Ordering::SeqCst)
@@ -878,7 +908,7 @@ pub async fn send_context_package(app: AppHandle, token: String) -> Result<Conte
     let scope = id.scope.clone();
     let preview = with_runtime(&app, move |r| {
         let p = r.preview.as_ref().ok_or("Prepare a new preview")?;
-        if r.revocation_pending
+        if r.revocation_pending()
             || !r.personal_os_login
             || p.token != token
             || !r.authority.permits(p, &scope)
@@ -940,7 +970,7 @@ async fn delete_shared_context_inner(
         r.settings.paused = true;
         if package_id.is_none() {
             r.recurring = None;
-            r.revocation_pending = true;
+            r.require_revocation(RevocationScope::All);
         }
         Ok(r.identity.clone())
     })
@@ -968,8 +998,7 @@ async fn delete_shared_context_inner(
                 return Err("Account changed".into());
             }
             r.recurring = None;
-            r.revocation_pending = false;
-            r.error = None;
+            r.acknowledge_revocation(RevocationScope::All);
             Ok(())
         })
         .await?;
@@ -987,7 +1016,7 @@ async fn revoke_recurring(app: &AppHandle, expected_scope: Option<&str>) -> Resu
             return Err("Account changed".into());
         }
         slot.as_ref()
-            .filter(|r| r.recurring.is_some() || r.revocation_pending)
+            .filter(|r| r.recurring.is_some() || r.revocation_pending())
             .map(|r| r.identity.scope.clone())
     };
     if let Some(scope) = scope {
@@ -1082,7 +1111,7 @@ pub async fn enable_context_summary(
             .preview
             .as_ref()
             .ok_or("Preview the daily selection first")?;
-        if r.revocation_pending
+        if r.revocation_pending()
             || !r.personal_os_login
             || p.token != token
             || !r.authority.permits(p, &scope)
@@ -1361,8 +1390,85 @@ mod tests {
             error: None,
             personal_os_login: true,
             key_fingerprint: hash(&[17; 32]),
-            revocation_pending: false,
+            pending_revocation: None,
         }
+    }
+    #[tokio::test]
+    async fn summary_ack_cannot_clear_a_failed_explicit_revoke_all() {
+        let dir = std::env::temp_dir().join(format!("context-revoke-scope-{}", Uuid::new_v4()));
+        let state = ContextState::default();
+        let identity = Identity::from_config(&AgentConfig::default());
+        let scope = identity.scope.clone();
+        let mut runtime = synthetic_runtime(&dir.join("synthetic.bin"), identity);
+        // Same pending state left by an explicit revoke-all whose request failed.
+        runtime.require_revocation(RevocationScope::All);
+        *state.runtime.lock().unwrap() = Some(runtime);
+        invalidate_selection_operation(&state, &scope, |_| async { Ok(()) })
+            .await
+            .unwrap();
+        let slot = state.runtime.lock().unwrap();
+        let r = slot.as_ref().unwrap();
+        assert!(
+            r.revocation_pending(),
+            "a summary-only acknowledgment cannot confirm revoke-all"
+        );
+        assert!(
+            r.error.is_some(),
+            "the outstanding all-grants warning must remain visible"
+        );
+        assert_eq!(r.pending_revocation, Some(RevocationScope::All));
+        drop(slot);
+        {
+            let mut slot = state.runtime.lock().unwrap();
+            let r = slot.as_mut().unwrap();
+            r.acknowledge_revocation(RevocationScope::All);
+            assert!(!r.revocation_pending());
+            assert!(r.error.is_none());
+        }
+        *state.runtime.lock().unwrap() = None;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[tokio::test]
+    async fn automatic_summary_revocation_never_promotes_to_revoke_all() {
+        let dir = std::env::temp_dir().join(format!("context-summary-only-{}", Uuid::new_v4()));
+        let state = ContextState::default();
+        let identity = Identity::from_config(&AgentConfig::default());
+        let scope = identity.scope.clone();
+        let mut r = synthetic_runtime(&dir.join("synthetic.bin"), identity.clone());
+        r.recurring = Some(Recurring {
+            selection_generation: 0,
+            grant_id: Uuid::new_v4(),
+            selection_sha256: "synthetic".into(),
+            day: None,
+            identity,
+        });
+        *state.runtime.lock().unwrap() = Some(r);
+        assert!(invalidate_selection_operation(&state, &scope, |_| async {
+            Err("synthetic offline".into())
+        })
+        .await
+        .is_err());
+        {
+            let slot = state.runtime.lock().unwrap();
+            let r = slot.as_ref().unwrap();
+            assert_eq!(r.pending_revocation, Some(RevocationScope::Summaries));
+            assert!(r.revocation_pending());
+        }
+        invalidate_selection_operation(&state, &scope, |_| async { Ok(()) })
+            .await
+            .unwrap();
+        {
+            let mut slot = state.runtime.lock().unwrap();
+            let r = slot.as_mut().unwrap();
+            assert!(!r.revocation_pending());
+            assert!(r.error.is_none());
+            // An explicitly stronger acknowledgement also covers a summary-only request.
+            r.require_revocation(RevocationScope::Summaries);
+            r.acknowledge_revocation(RevocationScope::All);
+            assert!(!r.revocation_pending());
+        }
+        *state.runtime.lock().unwrap() = None;
+        std::fs::remove_dir_all(dir).unwrap();
     }
     #[tokio::test]
     async fn delayed_old_account_save_cannot_copy_a_workflow_into_the_new_store() {
@@ -1495,7 +1601,7 @@ mod tests {
             error: None,
             personal_os_login: true,
             key_fingerprint: hash(&[17; 32]),
-            revocation_pending: false,
+            pending_revocation: None,
         };
         let state = ContextState::default();
         *state.runtime.lock().unwrap() = Some(runtime);
@@ -1523,7 +1629,7 @@ mod tests {
         assert!(next_summary(&state, today).is_none());
         let guard = state.runtime.lock().unwrap();
         let r = guard.as_ref().unwrap();
-        assert!(r.revocation_pending);
+        assert!(r.revocation_pending());
         assert!(r.error.is_some());
         drop(guard);
         *state.runtime.lock().unwrap() = None;
@@ -1565,7 +1671,7 @@ mod tests {
             error: None,
             personal_os_login: true,
             key_fingerprint: hash(&[37; 32]),
-            revocation_pending: false,
+            pending_revocation: None,
         };
         let preview = r
             .authority
@@ -1702,7 +1808,7 @@ fn next_summary(state: &ContextState, day: chrono::NaiveDate) -> Option<Recurrin
         .ok()
         .and_then(|slot| {
             slot.as_ref()
-                .filter(|r| !r.revocation_pending)
+                .filter(|r| !r.revocation_pending())
                 .and_then(|r| r.recurring.clone())
         })
         .filter(|r| r.day != Some(day) && r.selection_generation == generation)
@@ -1728,9 +1834,10 @@ where
         state.epoch.fetch_add(1, Ordering::SeqCst);
         let identity = if let Some(r) = slot.as_mut() {
             r.invalidate();
-            r.revocation_pending |= r.recurring.take().is_some();
-            if r.revocation_pending {
-                r.error = Some("Daily sharing stopped locally; remote revocation pending".into());
+            if r.recurring.take().is_some() {
+                r.require_revocation(RevocationScope::Summaries);
+            }
+            if r.revocation_pending() {
                 Some(r.identity.clone())
             } else {
                 None
@@ -1746,8 +1853,7 @@ where
         if let Some(r) = slot.as_mut().filter(|r| {
             r.identity == identity && state.sharing_generation.load(Ordering::SeqCst) == generation
         }) {
-            r.revocation_pending = false;
-            r.error = None;
+            r.acknowledge_revocation(RevocationScope::Summaries);
         }
     }
     Ok(())
