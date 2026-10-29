@@ -12,6 +12,7 @@ mod locale;
 mod reports;
 mod saas;
 mod scan;
+mod secure_storage;
 mod tray;
 mod updates;
 mod usage;
@@ -75,12 +76,14 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             locale::set_ui_language,
             browser_context::register_context_browser_host,
+            browser_context::open_context_browser_extension,
             context_history::cancel_context_preview,
             context_history::invalidate_context_selection,
             context_history::get_context_history,
             context_history::dismiss_context_candidate,
             context_history::export_context_history,
             context_history::set_context_settings,
+            context_history::restore_context_storage,
             context_history::delete_context_history,
             context_history::save_context_workflow,
             context_history::prepare_context_package,

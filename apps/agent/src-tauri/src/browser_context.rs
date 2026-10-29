@@ -24,7 +24,7 @@ struct Identity {
     extension_id: String,
 }
 fn identity() -> Identity {
-    serde_json::from_str(include_str!("../../../browser-extension/identity.json"))
+    serde_json::from_str(include_str!("../browser-extension-identity.json"))
         .expect("committed browser identity")
 }
 fn valid_origin(origin: &str) -> bool {
@@ -182,47 +182,62 @@ fn private_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     result
 }
 fn relay(frame: &Frame) -> Response {
-    let result = (|| -> Result<Response, ()> {
-        let path = data_dir()?.join("context-browser-endpoint.json");
-        let metadata = std::fs::symlink_metadata(&path).map_err(|_| ())?;
+    let result = (|| -> Result<Response, &'static str> {
+        let secret_value = crate::secure_storage::access(false, || {
+            bridge_key()
+                .map_err(|_| keyring::Error::NoEntry)?
+                .get_password()
+        })
+        .map_err(|error| {
+            if matches!(error, keyring::Error::NoEntry) {
+                "not_running"
+            } else {
+                "access_required"
+            }
+        })?;
+        let secret: Secret = serde_json::from_str(&secret_value).map_err(|_| "access_required")?;
+        let path = data_dir()
+            .map_err(|_| "not_running")?
+            .join("context-browser-endpoint.json");
+        let metadata = std::fs::symlink_metadata(&path).map_err(|_| "not_running")?;
         if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 1024 {
-            return Err(());
+            return Err("not_running");
         }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             if metadata.permissions().mode() & 0o077 != 0 {
-                return Err(());
+                return Err("not_running");
             }
         }
         let endpoint: Endpoint =
-            serde_json::from_slice(&std::fs::read(path).map_err(|_| ())?).map_err(|_| ())?;
-        let secret: Secret =
-            serde_json::from_str(&bridge_key()?.get_password().map_err(|_| ())?).map_err(|_| ())?;
+            serde_json::from_slice(&std::fs::read(path).map_err(|_| "not_running")?)
+                .map_err(|_| "not_running")?;
         if endpoint.instance != secret.instance {
-            return Err(());
+            return Err("not_running");
         }
         let mut socket = TcpStream::connect_timeout(
             &SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), endpoint.port),
             Duration::from_millis(250),
         )
-        .map_err(|_| ())?;
+        .map_err(|_| "not_running")?;
         socket
             .set_read_timeout(Some(Duration::from_millis(500)))
-            .map_err(|_| ())?;
+            .map_err(|_| "not_running")?;
         socket
             .set_write_timeout(Some(Duration::from_millis(500)))
-            .map_err(|_| ())?;
+            .map_err(|_| "not_running")?;
         let bytes = serde_json::to_vec(&Relay {
             instance: secret.instance,
             secret: secret.secret,
-            frame: serde_json::to_value(frame).map_err(|_| ())?,
+            frame: serde_json::to_value(frame).map_err(|_| "not_running")?,
         })
-        .map_err(|_| ())?;
-        write_frame(&mut socket, &bytes, MAX_FRAME)?;
-        serde_json::from_slice(&read_frame(&mut socket, MAX_FRAME)?).map_err(|_| ())
+        .map_err(|_| "not_running")?;
+        write_frame(&mut socket, &bytes, MAX_FRAME).map_err(|_| "not_running")?;
+        serde_json::from_slice(&read_frame(&mut socket, MAX_FRAME).map_err(|_| "not_running")?)
+            .map_err(|_| "not_running")
     })();
-    result.unwrap_or_else(|_| Response::new(false, "not_running"))
+    result.unwrap_or_else(|status| Response::new(false, status))
 }
 /// True for native-host invocations, including invalid origins (never fall through to UI).
 pub fn run_if_host(args: &[String]) -> Option<i32> {
@@ -276,10 +291,22 @@ fn process(bytes: &[u8], secret: &Secret, accept: impl FnOnce(Frame) -> Response
     };
     accept(frame)
 }
+static BRIDGE_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub fn start(app: AppHandle) {
-    std::thread::Builder::new()
+    use std::sync::atomic::Ordering;
+    if BRIDGE_STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let spawned = std::thread::Builder::new()
         .name("context-browser-relay".into())
         .spawn(move || {
+            struct Running;
+            impl Drop for Running {
+                fn drop(&mut self) {
+                    BRIDGE_STARTED.store(false, Ordering::SeqCst);
+                }
+            }
+            let _running = Running;
             let Ok(dir) = app.path().app_data_dir() else {
                 return;
             };
@@ -303,7 +330,7 @@ pub fn start(app: AppHandle) {
             let Ok(serialized) = serde_json::to_string(&secret) else {
                 return;
             };
-            if entry.set_password(&serialized).is_err() {
+            if crate::secure_storage::access(false, || entry.set_password(&serialized)).is_err() {
                 return;
             }
             let Ok(address) = listener.local_addr() else {
@@ -357,9 +384,11 @@ pub fn start(app: AppHandle) {
                 );
             }
             let _ = std::fs::remove_file(path);
-            let _ = entry.delete_credential();
-        })
-        .ok();
+            let _ = crate::secure_storage::access(false, || entry.delete_credential());
+        });
+    if spawned.is_err() {
+        BRIDGE_STARTED.store(false, Ordering::SeqCst);
+    }
 }
 pub fn shutdown(app: &AppHandle) {
     app.state::<ContextState>().pause();
@@ -367,7 +396,7 @@ pub fn shutdown(app: &AppHandle) {
         let _ = std::fs::remove_file(dir.join("context-browser-endpoint.json"));
     }
     if let Ok(entry) = bridge_key() {
-        let _ = entry.delete_credential();
+        let _ = crate::secure_storage::access(false, || entry.delete_credential());
     }
 }
 #[derive(Deserialize)]
@@ -376,6 +405,14 @@ pub enum Browser {
     Chrome,
     Edge,
 }
+#[tauri::command]
+pub fn open_context_browser_extension(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url("https://chromewebstore.google.com/detail/sanka-monitor/pnmoihnlnknipihnmjipgcanlifjenhh", None::<&str>)
+        .map_err(|_| "Could not open the extension store".into())
+}
+
 #[tauri::command]
 pub async fn register_context_browser_host(
     app: AppHandle,

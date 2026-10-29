@@ -93,8 +93,8 @@ pub(super) fn install_session_notifications(state: ContextState) {
         // Process-lifetime callbacks retain a pause-only handle, never any captured content.
         std::mem::forget(token);
     }
-    // Screen locking uses the distributed center; callbacks run on a dedicated CF runloop.
-    std::thread::spawn(move || {
+    // Distributed notifications are delivered on AppKit's main run loop.
+    {
         use std::ffi::{c_void, CString};
         type Ref = *const c_void;
         #[link(name = "CoreFoundation", kind = "framework")]
@@ -109,35 +109,43 @@ pub(super) fn install_session_notifications(state: ContextState) {
                 behavior: isize,
             );
             fn CFStringCreateWithCString(a: Ref, s: *const i8, e: u32) -> Ref;
-            fn CFRunLoopRun();
+            fn CFRunLoopGetCurrent() -> Ref;
+            fn CFRunLoopGetMain() -> Ref;
+            fn CFRelease(value: Ref);
         }
         unsafe extern "C" fn locked(_: Ref, observer: *mut c_void, _: Ref, _: Ref, _: Ref) {
             if let Some(state) = unsafe { (observer as *const ContextState).as_ref() } {
                 state.pause();
             }
         }
-        let state = Box::into_raw(Box::new(state));
         unsafe {
+            let center = CFNotificationCenterGetDistributedCenter();
+            if center.is_null() || CFRunLoopGetCurrent() != CFRunLoopGetMain() {
+                state.pause();
+                return;
+            }
             let name = CString::new("com.apple.screenIsLocked").unwrap();
             let name = CFStringCreateWithCString(std::ptr::null(), name.as_ptr(), 0x08000100);
+            if name.is_null() {
+                state.pause();
+                return;
+            }
+            // The process-lifetime observer owns this pause-only state handle.
+            let state = Box::into_raw(Box::new(state));
             CFNotificationCenterAddObserver(
-                CFNotificationCenterGetDistributedCenter(),
+                center,
                 state.cast(),
                 locked,
                 name,
                 std::ptr::null(),
                 4,
             );
+            CFRelease(name);
             (*state)
                 .session_ready
                 .store(true, std::sync::atomic::Ordering::SeqCst);
-            CFRunLoopRun();
-            (*state)
-                .session_ready
-                .store(false, std::sync::atomic::Ordering::SeqCst);
-            (*state).pause();
         }
-    });
+    }
 }
 #[cfg(target_os = "windows")]
 pub(super) fn install_session_notifications(state: ContextState) {

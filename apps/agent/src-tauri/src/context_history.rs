@@ -292,7 +292,7 @@ impl ContextState {
 fn key(scope: &str, create: bool) -> Result<[u8; 32], String> {
     let entry = keyring::Entry::new("com.sanka.monitor.context", scope)
         .map_err(|_| "Secure storage unavailable")?;
-    match entry.get_password() {
+    match crate::secure_storage::access(false, || entry.get_password()) {
         Ok(value) => STANDARD
             .decode(value)
             .ok()
@@ -301,8 +301,7 @@ fn key(scope: &str, create: bool) -> Result<[u8; 32], String> {
         Err(keyring::Error::NoEntry) if create => {
             let mut bytes = [0; 32];
             getrandom::fill(&mut bytes).map_err(|_| "Secure random unavailable")?;
-            entry
-                .set_password(&STANDARD.encode(bytes))
+            crate::secure_storage::access(false, || entry.set_password(&STANDARD.encode(bytes)))
                 .map_err(|_| "Secure storage unavailable")?;
             Ok(bytes)
         }
@@ -577,6 +576,35 @@ fn activate_settings(
     Ok(())
 }
 #[tauri::command]
+pub async fn restore_context_storage(app: AppHandle, account_scope: String) -> Result<(), String> {
+    if identity(&app).await.scope != account_scope {
+        return Err("Account changed; reopen Work History".into());
+    }
+    app.state::<ContextState>().pause();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::secure_storage::access(true, || {
+            let entry = keyring::Entry::new("com.sanka.monitor.context", &account_scope)?;
+            match entry.get_password() {
+                Ok(_) | Err(keyring::Error::NoEntry) => {}
+                Err(error) => return Err(error),
+            }
+            let bridge = keyring::Entry::new("com.sanka.monitor.context", "browser-bridge")?;
+            match bridge.get_password() {
+                Ok(_) | Err(keyring::Error::NoEntry) => Ok(()),
+                Err(error) => Err(error),
+            }
+        })
+        .map_err(|_| {
+            "Secure storage access was not restored. Recording remains paused.".to_string()
+        })
+    })
+    .await
+    .map_err(|_| "Secure storage recovery unavailable".to_string())??;
+    crate::browser_context::start(app);
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn set_context_settings(
     app: AppHandle,
     settings: ContextSettings,
@@ -630,8 +658,9 @@ pub async fn set_context_settings(
                     && state.session_ready.load(Ordering::SeqCst)
                     && permitted
                     && session_available();
-                if r.settings.enabled && !active {
+                if r.settings.enabled && !r.settings.paused && !active {
                     r.settings.paused = true;
+                    return Err("Recording could not start. Check that this computer is unlocked and your workspace allows recording, then try again.".into());
                 }
                 r.check_key()?;
                 if let Err(error) =
@@ -1438,6 +1467,13 @@ pub fn start(app: AppHandle) {
                         }
                     }
                     if !worker.gate.is_active() {
+                        return;
+                    }
+                    // Browser-only recording needs no native Accessibility polling.
+                    if !r.settings.allows_app("com.apple.TextEdit")
+                        && !r.settings.allows_app("notepad.exe")
+                    {
+                        r.last_gap = None;
                         return;
                     }
                     if r.check_key().is_err() {

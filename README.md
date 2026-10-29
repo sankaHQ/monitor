@@ -374,7 +374,7 @@ policy stop richer capture. Unlocking never resumes it; restarting begins paused
 Existing scans and coarse usage keep their separate settings.
 
 Initial richer profiles are **Google Sheets in Chrome or Edge** through the
-[companion extension](apps/browser-extension/README.md), system TextEdit on macOS,
+[existing Sanka Monitor extension](https://github.com/sankaHQ/monitor-extension), system TextEdit on macOS,
 and classic system Notepad on Windows. Native Excel, Store Notepad and other
 surfaces are unsupported. Native capture needs the person's OS Accessibility/UIA
 access; Monitor does not grant it. Normalized actions are inferred interactions,
@@ -414,8 +414,11 @@ receipt. Local erasure and cloud deletion are separate controls. Erase-all remov
 all account namespaces and their interrupted snapshots without requiring their
 decryption keys, while refusing stores open in another process.
 
-The companion uses the public development identity in
-`apps/browser-extension/identity.json`. Work History's Chrome/Edge setup button
+The extension keeps the existing published Chrome Web Store identity
+`pnmoihnlnknipihnmjipgcanlifjenhh`, pinned in
+`apps/agent/src-tauri/browser-extension-identity.json`. Browser source, packaging
+and browser-boundary tests live in `sankaHQ/monitor-extension`; this repository
+does not publish a separate companion. Work History's Chrome/Edge setup button
 registers a **per-user** native host; it does not install the extension, request
 browser permissions or enable capture. macOS uses a private launcher under the
 app data directory and the selected browser's NativeMessagingHosts directory;
@@ -426,7 +429,20 @@ direct origin argument), before any app/UI startup. It relays only closed v1
 status/pause/normalized observation frames through a bounded loopback channel with
 a per-launch OS-keychain secret; it cannot fetch history or upload content.
 
-This implementation has synthetic verification, **not real-device qualification**.
-Chrome, Edge, native macOS/Windows permission/lock behavior and resource budgets
-still need an explicit consenting device test before support is advertised. No
-browser-store distribution or production rollout is implied by a successful build.
+A controlled Chrome/macOS test on 2026-10-29 verified native-host setup, real Sheets
+Print/Import command capture, foreground-only filtering, browser pause and private
+JSON export. It did not prove completed business operations or a final repeated-task
+suggestion: candidate grouping requires matching occurrences across at least two days.
+The detector currently compares bounded activity-session signatures; repeated
+subsequences within a continuous session still need qualification. Edge, Windows,
+lock/sleep transitions, signed-upgrade keychain behavior and resource budgets remain
+unqualified. No browser-store publication or production rollout is implied.
+
+Background keychain operations never request a macOS password dialog. If secure
+storage access is unavailable, history stays paused; the person can explicitly choose
+**Work History → Settings → Secure storage access → Restore secure storage access**.
+That foreground action may request OS approval and does not resume recording.
+No encrypted history is discarded and no plaintext fallback is introduced. Browser-only
+capture does not poll native Accessibility. Ad-hoc local builds have a different signing
+identity from the Developer ID-signed release, so signing/update behavior needs its own
+release qualification.

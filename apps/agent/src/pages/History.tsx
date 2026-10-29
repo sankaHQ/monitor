@@ -1097,30 +1097,62 @@ function AccountHistory({ ctx }: { ctx: AppContext }) {
                 </button>
               </div>
             </fieldset>
-            <details className="more history-recurring">
-              <summary>{t.register}</summary>
+            <section
+              className="history-recurring"
+              aria-labelledby="browser-setup-title"
+            >
+              <h3 id="browser-setup-title">{t.register}</h3>
               <p>{t.registration}</p>
+              <ol>
+                <li>{t.installExtension}</li>
+                <li>{t.connectExtension}</li>
+                <li>{t.enableExtension}</li>
+              </ol>
               <div className="history-actions">
+                <button
+                  className="button"
+                  disabled={busy}
+                  onClick={() =>
+                    run(() => invokeCurrent("open_context_browser_extension"))
+                  }
+                >
+                  {t.extensionStore}
+                </button>
                 {["chrome", "edge"].map((browser) => (
                   <button
                     className="button"
                     key={browser}
                     disabled={busy}
                     onClick={() =>
-                      run(async () =>
-                        setMessage(
-                          await invokeCurrent<string>(
-                            "register_context_browser_host",
-                            { browser },
-                          ),
-                        ),
-                      )
+                      run(async () => {
+                        await invokeCurrent<string>(
+                          "register_context_browser_host",
+                          { browser },
+                        );
+                        setMessage(t.browserConnected);
+                      })
                     }
                   >
-                    {browser === "chrome" ? "Chrome" : "Edge"}
+                    {browser === "chrome" ? t.connectChrome : t.connectEdge}
                   </button>
                 ))}
               </div>
+            </section>
+            <details className="more">
+              <summary>{t.secureStorage}</summary>
+              <p>{t.secureStorageHint}</p>
+              <button
+                className="button"
+                disabled={busy}
+                onClick={() =>
+                  run(async () => {
+                    await invokeCurrent("restore_context_storage");
+                    setMessage(t.storageRestored);
+                  })
+                }
+              >
+                {t.restoreStorage}
+              </button>
             </details>
             <details className="more">
               <summary>{t.permissions}</summary>

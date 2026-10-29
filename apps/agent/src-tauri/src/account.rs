@@ -170,8 +170,8 @@ fn keyring_entry(device_id: &str) -> Result<keyring::Entry, String> {
 
 async fn store_secret(device_id: String, secret: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        keyring_entry(&device_id)?
-            .set_password(&secret)
+        let entry = keyring_entry(&device_id)?;
+        crate::secure_storage::access(false, || entry.set_password(&secret))
             .map_err(|err| format!("could not save the sign-in in the keychain: {err}"))
     })
     .await
@@ -180,21 +180,22 @@ async fn store_secret(device_id: String, secret: String) -> Result<(), String> {
 
 /// The secret, or `None` when this computer's keychain no longer holds it.
 async fn read_secret(device_id: String) -> Result<Option<String>, String> {
-    tauri::async_runtime::spawn_blocking(move || match keyring_entry(&device_id)?.get_password() {
-        Ok(secret) => Ok(Some(secret)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(err) => Err(format!(
-            "Sanka Monitor could not read its sign-in from the keychain ({err}). Allow access and try again."
-        )),
-    })
-    .await
-    .map_err(|err| err.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        let entry = keyring_entry(&device_id)?;
+        match crate::secure_storage::access(false, || entry.get_password()) {
+            Ok(secret) => Ok(Some(secret)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(_) => Err("Sanka Monitor cannot access the saved sign-in. Open the signed app or sign in again.".into()),
+        }
+    }).await.map_err(|err| err.to_string())?
 }
 
 async fn delete_secret(device_id: String) {
     let _ = tauri::async_runtime::spawn_blocking(move || {
-        keyring_entry(&device_id)
-            .and_then(|entry| entry.delete_credential().map_err(|err| err.to_string()))
+        keyring_entry(&device_id).and_then(|entry| {
+            crate::secure_storage::access(false, || entry.delete_credential())
+                .map_err(|err| err.to_string())
+        })
     })
     .await;
 }
