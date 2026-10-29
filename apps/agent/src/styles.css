@@ -1346,3 +1346,33 @@ textarea.input {
 .history-page :focus-visible {
   scroll-margin-block: 64px;
 }
+
+.history-detected {
+  margin-bottom: 20px;
+}
+.history-detected .text {
+  display: grid;
+  gap: 4px;
+}
+.history-search {
+  align-items: center;
+}
+.history-search .input {
+  flex: 1;
+  min-width: 160px;
+}
+.history-task-steps {
+  padding: 0;
+  list-style: none;
+}
+.history-step-number {
+  color: var(--tx2);
+  width: 20px;
+  flex: none;
+}
+.history-editor > details.more {
+  margin: 16px 0;
+}
+.history-editor > details.more > summary {
+  margin-bottom: 12px;
+}

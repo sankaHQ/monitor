@@ -90,7 +90,8 @@ change report. Public extension-store identity and publishing are separate revie
 
 `apps/agent/tests/history-ui.test.mjs` runs the built desktop UI in an isolated,
 headless Chromium with a synthetic Tauri boundary. It checks account-switch
-editor/history isolation, delayed action results and offline disclosure changes;
+editor/history isolation, delayed action results, offline disclosure changes,
+automatic candidate review without typing, and dismissal without activity deletion;
 Rust tests own the native consent/store/scheduler behavior. It never opens a real
 browser profile or invokes native capture. The URL guard permits only HTTP
 loopback IP origins (`127.0.0.1` or `[::1]`); all other browser requests are blocked.

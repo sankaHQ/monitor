@@ -6,9 +6,9 @@ use crate::{
 use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::{DateTime, Utc};
 use monitor_context::{
-    Action, Audience, Collector, ContextApp, ContextCandidate, ContextCoverage, ContextEvent,
-    ContextPackage, ContextSettings, ContextStore, ContextWorkflow, Gap, ObjectCategory,
-    Provenance, ReportEvidence, SessionGate, MAX_PACKAGE_BYTES,
+    Action, Audience, Collector, ContextApp, ContextCandidate, ContextCoverage, ContextEpisode,
+    ContextEvent, ContextPackage, ContextSettings, ContextStore, ContextWorkflow, Gap,
+    ObjectCategory, Provenance, ReportEvidence, SessionGate, MAX_PACKAGE_BYTES,
 };
 use monitor_sync::{AgentClient, ContextReceipt, ContextRoute};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -22,6 +22,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tauri::{AppHandle, Manager};
+use tauri_plugin_dialog::DialogExt as _;
 use uuid::Uuid;
 #[path = "context_session.rs"]
 mod session;
@@ -407,6 +408,7 @@ pub struct History {
     active: bool,
     events: Vec<ContextEvent>,
     candidates: Vec<ContextCandidate>,
+    episodes: Vec<ContextEpisode>,
     workflows: Vec<ContextWorkflow>,
     recurring: bool,
     revocation_pending: bool,
@@ -417,13 +419,26 @@ pub struct History {
 pub async fn get_context_history(app: AppHandle, account_scope: String) -> Result<History, String> {
     let state = app.state::<ContextState>().inner().clone();
     with_runtime_bound(&app, &account_scope, move |r| {
+        let candidates = r.store.pending_candidates(Utc::now());
+        let workflows = r.store.workflows();
+        let episodes = r
+            .store
+            .candidates()
+            .into_iter()
+            .filter(|candidate| {
+                candidates.iter().any(|pending| pending.id == candidate.id)
+                    || workflows.iter().any(|workflow| workflow.id == candidate.id)
+            })
+            .flat_map(|candidate| candidate.episodes)
+            .collect();
         Ok(History {
             own_os_login: r.personal_os_login,
             settings: r.settings.clone(),
             active: state.gate.is_active() && r.settings.enabled && !r.settings.paused,
             events: r.store.events(),
-            candidates: r.store.candidates(),
-            workflows: r.store.workflows(),
+            candidates,
+            episodes,
+            workflows,
             recurring: r.recurring.as_ref().is_some_and(|grant| {
                 grant.selection_generation == state.sharing_generation.load(Ordering::SeqCst)
             }),
@@ -434,6 +449,95 @@ pub async fn get_context_history(app: AppHandle, account_scope: String) -> Resul
     })
     .await
 }
+#[tauri::command]
+pub async fn dismiss_context_candidate(
+    app: AppHandle,
+    id: Uuid,
+    account_scope: String,
+) -> Result<(), String> {
+    app.state::<ContextState>()
+        .epoch
+        .fetch_add(1, Ordering::SeqCst);
+    with_runtime_bound(&app, &account_scope, move |r| {
+        r.invalidate();
+        r.store
+            .dismiss_candidate(id, Utc::now())
+            .map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// An explicit local copy, with no account tokens, settings or upload path.
+#[tauri::command]
+pub async fn export_context_history(app: AppHandle, account_scope: String) -> Result<bool, String> {
+    let state = app.state::<ContextState>().inner().clone();
+    let epoch = state.epoch.load(Ordering::SeqCst);
+    let bytes = with_runtime_bound(&app, &account_scope, |r| {
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schemaVersion": 1,
+            "exportedAt": Utc::now(),
+            "activity": r.store.events(),
+            "repeatedTasks": r.store.pending_candidates(Utc::now()),
+            "reviewedTasks": r.store.workflows(),
+        }))
+        .map_err(|_| "Could not prepare local history".into())
+    })
+    .await?;
+    let dialog = app
+        .dialog()
+        .file()
+        .set_file_name("sanka-monitor-history.json")
+        .add_filter("JSON", &["json"]);
+    let Some(chosen) = tauri::async_runtime::spawn_blocking(move || dialog.blocking_save_file())
+        .await
+        .map_err(|_| "Save dialog unavailable")?
+    else {
+        return Ok(false);
+    };
+    let path = chosen.into_path().map_err(|_| "Choose a local file")?;
+    with_runtime_bound(&app, &account_scope, move |_| {
+        write_history_export(&path, &bytes, &state.epoch, epoch)?;
+        Ok(true)
+    })
+    .await
+}
+
+fn write_history_export(
+    path: &std::path::Path,
+    bytes: &[u8],
+    epoch: &AtomicU64,
+    expected_epoch: u64,
+) -> Result<(), String> {
+    use std::io::Write;
+    if epoch.load(Ordering::SeqCst) != expected_epoch {
+        return Err("History changed; export again".into());
+    }
+    let temporary = path.with_file_name(format!(".sanka-monitor-history-{}.tmp", Uuid::new_v4()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&temporary)
+        .map_err(|_| "Could not create local history file")?;
+    let result = (|| {
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        if epoch.load(Ordering::SeqCst) != expected_epoch {
+            return Err(std::io::Error::other("History changed"));
+        }
+        std::fs::rename(&temporary, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result.map_err(|_| "Could not save history; review and export again".to_string())
+}
+
 async fn settings_operation<P, A, F>(
     state: &ContextState,
     prepare: P,
@@ -1423,6 +1527,38 @@ mod tests {
             key_fingerprint: hash(&[17; 32]),
             pending_revocation: None,
         }
+    }
+    #[test]
+    fn local_export_is_private_atomic_and_rejects_stale_snapshots() {
+        let directory = std::env::temp_dir().join(format!("monitor-export-{}", Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("history.json");
+        let unrelated = directory.join("history.json.tmp");
+        std::fs::write(&path, b"original").unwrap();
+        std::fs::write(&unrelated, b"unrelated").unwrap();
+        let epoch = AtomicU64::new(4);
+        assert!(write_history_export(&path, b"stale", &epoch, 3).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"original");
+        write_history_export(&path, b"{\"activity\":[]}", &epoch, 4).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"{\"activity\":[]}");
+        assert_eq!(std::fs::read(&unrelated).unwrap(), b"unrelated");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        let target_directory = directory.join("preserved");
+        std::fs::create_dir(&target_directory).unwrap();
+        assert!(
+            write_history_export(&target_directory, b"cannot replace a directory", &epoch, 4)
+                .is_err()
+        );
+        assert!(target_directory.is_dir());
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 3);
+        std::fs::remove_dir_all(directory).unwrap();
     }
     #[tokio::test]
     async fn final_pending_revocation_survives_full_local_erasure() {

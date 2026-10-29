@@ -78,6 +78,8 @@ fn main() {
             context_history::cancel_context_preview,
             context_history::invalidate_context_selection,
             context_history::get_context_history,
+            context_history::dismiss_context_candidate,
+            context_history::export_context_history,
             context_history::set_context_settings,
             context_history::delete_context_history,
             context_history::save_context_workflow,

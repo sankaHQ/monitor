@@ -50,6 +50,8 @@ struct State {
     capacity_gap: Option<ContextEvent>,
     #[serde(default)]
     discontinuities: Vec<DateTime<Utc>>,
+    #[serde(default)]
+    dismissed_candidates: BTreeMap<Uuid, DateTime<Utc>>,
 }
 
 pub struct ContextStore {
@@ -197,6 +199,7 @@ impl ContextStore {
             .retain(|at| *at >= now - Duration::hours(48));
         next.occurrences
             .retain(|o| o.ended_at >= now - Duration::days(30));
+        next.dismissed_candidates.retain(|_, until| *until > now);
         let live: HashSet<_> = next.events.iter().map(|e| e.id).collect();
         let supported: HashSet<_> = next
             .occurrences
@@ -243,6 +246,33 @@ impl ContextStore {
     }
     pub fn workflows(&self) -> Vec<ContextWorkflow> {
         self.state.workflows.clone()
+    }
+    /// Review state never removes occurrence evidence used by an approved package.
+    pub fn pending_candidates(&self, now: DateTime<Utc>) -> Vec<ContextCandidate> {
+        self.candidates()
+            .into_iter()
+            .filter(|candidate| {
+                !self.state.workflows.iter().any(|w| w.id == candidate.id)
+                    && !self
+                        .state
+                        .dismissed_candidates
+                        .get(&candidate.id)
+                        .is_some_and(|until| *until > now)
+            })
+            .collect()
+    }
+    pub fn dismiss_candidate(&mut self, id: Uuid, now: DateTime<Utc>) -> Result<()> {
+        ensure(
+            self.candidates().iter().any(|candidate| candidate.id == id),
+            "task is no longer available",
+        )?;
+        let mut next = self.state.clone();
+        next.dismissed_candidates.retain(|_, until| *until > now);
+        next.dismissed_candidates
+            .insert(id, now + Duration::days(30));
+        self.write(&next, CAPACITY_RESERVE)?;
+        self.state = next;
+        Ok(())
     }
     pub fn candidates(&self) -> Vec<ContextCandidate> {
         let mut groups: BTreeMap<String, Vec<&Occurrence>> = BTreeMap::new();
@@ -598,8 +628,21 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].repeat_count, 4);
         assert_eq!(candidates[0].episodes[0].day, at().date_naive());
+        let candidate_id = candidates[0].id;
+        let observed = store.events();
+        store.dismiss_candidate(candidate_id, at()).unwrap();
+        assert!(store.pending_candidates(at()).is_empty());
+        assert_eq!(store.events(), observed);
+        drop(store);
+        let mut store = ContextStore::open(&path, [7; 32]).unwrap();
+        assert!(store.pending_candidates(at()).is_empty());
+        assert_eq!(store.candidates(), candidates);
+        assert_eq!(
+            store.pending_candidates(at() + Duration::days(31)),
+            candidates
+        );
         let workflow = ContextWorkflow {
-            id: Uuid::new_v4(),
+            id: candidate_id,
             name: "Reviewed workflow".into(),
             purpose: String::new(),
             app_ids: vec!["a".into(), "b".into()],
@@ -613,6 +656,15 @@ mod tests {
             episode_ids: vec![candidates[0].episodes.last().unwrap().id],
         };
         store.save_workflow(workflow.clone()).unwrap();
+        store.save_workflow(workflow.clone()).unwrap();
+        assert_eq!(store.workflows().len(), 1);
+        assert!(store
+            .pending_candidates(at() + Duration::days(31))
+            .is_empty());
+        assert_eq!(store.candidates(), candidates);
+        drop(store);
+        let mut store = ContextStore::open(&path, [7; 32]).unwrap();
+        assert!(store.pending_candidates(at()).is_empty());
         let ids: Vec<_> = store
             .events()
             .into_iter()
@@ -632,6 +684,50 @@ mod tests {
         assert!(store.workflows().is_empty());
         assert!(store.events().is_empty());
         assert!(store.candidates().is_empty());
+        drop(store);
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn reviewed_task_stays_reviewed_after_raw_activity_expires() {
+        let path = path();
+        let mut store = ContextStore::open(&path, [7; 32]).unwrap();
+        for minutes in [0, 60, 1440] {
+            for (i, app) in ["a", "b"].iter().enumerate() {
+                store
+                    .append(event(
+                        app,
+                        at() + Duration::minutes(minutes) + Duration::seconds(i as i64),
+                    ))
+                    .unwrap();
+            }
+        }
+        let candidate = store.candidates().remove(0);
+        store
+            .save_workflow(ContextWorkflow {
+                id: candidate.id,
+                name: "Reviewed task".into(),
+                purpose: String::new(),
+                app_ids: vec!["a".into(), "b".into()],
+                steps: vec!["Review".into()],
+                exceptions: String::new(),
+                required_features: String::new(),
+                frequency_per_week: None,
+                minutes_per_run: None,
+                confirmed: true,
+                owns_custom_code: None,
+                episode_ids: candidate.episodes.iter().map(|e| e.id).collect(),
+            })
+            .unwrap();
+        store.prune(at() + Duration::days(4)).unwrap();
+        assert!(store.events().is_empty());
+        assert!(store.workflows()[0].episode_ids.is_empty());
+        assert_eq!(store.candidates().len(), 1);
+        drop(store);
+        let store = ContextStore::open(&path, [7; 32]).unwrap();
+        assert!(store
+            .pending_candidates(at() + Duration::days(4))
+            .is_empty());
+        assert_eq!(store.workflows().len(), 1);
         drop(store);
         std::fs::remove_file(path).unwrap();
     }

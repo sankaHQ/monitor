@@ -8,6 +8,7 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import type { AppContext } from "../context";
 import type {
+  ContextCandidate,
   ContextHistory,
   ContextPreview,
   ContextReceipt,
@@ -64,6 +65,7 @@ function AccountHistory({ ctx }: { ctx: AppContext }) {
   const [history, setHistory] = useState<ContextHistory | null>(null);
   const [busy, setBusy] = useState(false),
     [message, setMessage] = useState("");
+  const [notice, setNotice] = useState("");
   const [ownLogin, setOwnLogin] = useState(false),
     [erase, setErase] = useState(false);
   const [allowed, setAllowed] = useState<string[]>([]),
@@ -76,14 +78,19 @@ function AccountHistory({ ctx }: { ctx: AppContext }) {
   const [preview, setPreview] = useState<ContextPreview | null>(null),
     [receipt, setReceipt] = useState<ContextReceipt | null>(null);
   const [editor, setEditor] = useState<ContextWorkflow | null>(null);
+  const [reviewCandidate, setReviewCandidate] =
+    useState<ContextCandidate | null>(null);
+  const [search, setSearch] = useState("");
   const [section, setSection] = useState<
     "activity" | "workflows" | "sharing" | "settings"
   >("activity");
   const pageRef = useRef<HTMLDivElement>(null);
-  const newWorkflowButton = useRef<HTMLButtonElement>(null);
+  const taskHeading = useRef<HTMLHeadingElement>(null);
+  const reviewHeading = useRef<HTMLHeadingElement>(null);
   const wasEditing = useRef(false);
   useEffect(() => {
-    if (!editor && wasEditing.current) newWorkflowButton.current?.focus();
+    if (editor && reviewCandidate) reviewHeading.current?.focus();
+    if (!editor && wasEditing.current) taskHeading.current?.focus();
     wasEditing.current = !!editor;
   }, [!!editor]);
   useEffect(() => {
@@ -126,6 +133,7 @@ function AccountHistory({ ctx }: { ctx: AppContext }) {
     if (!mounted.current) return;
     setBusy(true);
     setMessage("");
+    setNotice("");
     try {
       await action();
       await refresh();
@@ -194,7 +202,7 @@ function AccountHistory({ ctx }: { ctx: AppContext }) {
       {multi ? (
         <textarea
           className="input"
-          autoFocus={label === t.name}
+          autoFocus={label === t.name && !reviewCandidate}
           value={value}
           maxLength={maxLength}
           onChange={(e) => change(e.target.value)}
@@ -202,7 +210,7 @@ function AccountHistory({ ctx }: { ctx: AppContext }) {
       ) : (
         <input
           className="input"
-          autoFocus={label === t.name}
+          autoFocus={label === t.name && !reviewCandidate}
           value={value}
           maxLength={maxLength}
           onChange={(e) => change(e.target.value)}
@@ -217,6 +225,37 @@ function AccountHistory({ ctx }: { ctx: AppContext }) {
     workflows?: ContextWorkflow[];
     scan: unknown;
   } | null = preview ? JSON.parse(preview.packageJson) : null;
+  const candidateName = (candidate: ContextCandidate) =>
+    `${[...new Set(candidate.steps.map((step) => appName(step.appId)))].join(" → ")}: ${candidate.steps.map((step) => contextLabel(ctx.lang, step.action)).join(" → ")}`.slice(
+      0,
+      200,
+    );
+  const startReview = (candidate: ContextCandidate) => {
+    setReviewCandidate(candidate);
+    setEditor({
+      ...blank(),
+      id: candidate.id,
+      name: candidateName(candidate),
+      appIds: [...new Set(candidate.steps.map((step) => step.appId))],
+      steps: candidate.steps.map(
+        (step) =>
+          `${appName(step.appId)}: ${contextLabel(ctx.lang, step.action)}`,
+      ),
+      episodeIds: candidate.episodes
+        .filter((episode) => !episode.gaps.includes("insufficient_evidence"))
+        .map((episode) => episode.id),
+    });
+    setSection("workflows");
+  };
+  const pendingCount = history?.candidates.length ?? 0;
+  const displayedEvents = (history?.events ?? [])
+    .filter((event) =>
+      `${event.appName} ${contextLabel(ctx.lang, event.action)} ${event.gap ? contextLabel(ctx.lang, event.gap) : ""}`
+        .toLocaleLowerCase(ctx.lang)
+        .includes(search.toLocaleLowerCase(ctx.lang)),
+    )
+    .slice(-100)
+    .reverse();
   return (
     <div className="history-page" ref={pageRef}>
       <PageTitle icon="reports">{t.title}</PageTitle>
@@ -247,9 +286,28 @@ function AccountHistory({ ctx }: { ctx: AppContext }) {
           {message || history?.error}
         </p>
       ) : null}
+      {notice ? (
+        <p className="history-note" role="status">
+          {notice}
+        </p>
+      ) : null}
       <div aria-busy={busy}>
         {section === "activity" ? (
           <section aria-label={t.activity}>
+            {pendingCount > 0 ? (
+              <div className="banner history-detected">
+                <div className="text">
+                  <b>{t.detectedCount(pendingCount)}</b>
+                  <span>{t.detectedHint}</span>
+                </div>
+                <button
+                  className="button primary"
+                  onClick={() => setSection("workflows")}
+                >
+                  {t.reviewTasks}
+                </button>
+              </div>
+            ) : null}
             <div className="history-heading">
               <h2>{t.events}</h2>
               <button
@@ -262,6 +320,31 @@ function AccountHistory({ ctx }: { ctx: AppContext }) {
               </button>
             </div>
             <p className="history-description">{t.eventsHint}</p>
+            <div className="history-actions history-search">
+              <input
+                className="input"
+                type="search"
+                aria-label={t.searchActivity}
+                placeholder={t.searchActivity}
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+              <button
+                className="button"
+                disabled={busy || !history}
+                onClick={() =>
+                  run(async () => {
+                    const saved = await invokeCurrent<boolean>(
+                      "export_context_history",
+                    );
+                    if (saved) setNotice(t.exported);
+                  })
+                }
+              >
+                {t.exportHistory}
+              </button>
+            </div>
+            <p className="history-description">{t.exportHint}</p>
             {history?.gap ? (
               <p className="history-note">
                 {contextLabel(ctx.lang, history.gap)}
@@ -281,23 +364,23 @@ function AccountHistory({ ctx }: { ctx: AppContext }) {
                   </button>
                 </div>
               ) : (
-                history.events
-                  .slice(-100)
-                  .reverse()
-                  .map((event) => (
-                    <div key={event.id}>
-                      {check(
-                        event.gap
-                          ? contextLabel(ctx.lang, event.gap)
-                          : `${event.appName} — ${contextLabel(ctx.lang, event.action)}`,
-                        selected.includes(event.id),
-                        () => setSelected(toggle(selected, event.id)),
-                        `${new Date(event.at).toLocaleString(ctx.lang)}${event.gap ? "" : ` · ${contextLabel(ctx.lang, event.provenance)}`}`,
-                      )}
-                    </div>
-                  ))
+                displayedEvents.map((event) => (
+                  <div key={event.id}>
+                    {check(
+                      event.gap
+                        ? contextLabel(ctx.lang, event.gap)
+                        : `${event.appName} — ${contextLabel(ctx.lang, event.action)}`,
+                      selected.includes(event.id),
+                      () => setSelected(toggle(selected, event.id)),
+                      `${new Date(event.at).toLocaleString(ctx.lang)}${event.gap ? "" : ` · ${contextLabel(ctx.lang, event.provenance)}`}`,
+                    )}
+                  </div>
+                ))
               )}
             </div>
+            {history?.events.length && !displayedEvents.length ? (
+              <p className="history-description">{t.noMatches}</p>
+            ) : null}
             {selected.length ? (
               <div className="history-actions">
                 <span className="history-description">
@@ -327,127 +410,163 @@ function AccountHistory({ ctx }: { ctx: AppContext }) {
           <section aria-label={t.workflowsTab}>
             {editor ? (
               <fieldset className="history-editor" disabled={busy}>
-                <legend>{t.editWorkflow}</legend>
-                <p className="history-description">{t.workflowHint}</p>
-                {field(
-                  t.name,
-                  editor.name,
-                  (name) => setEditor({ ...editor, name }),
-                  200,
+                <legend>
+                  {reviewCandidate ? t.reviewTask : t.editWorkflow}
+                </legend>
+                {reviewCandidate ? (
+                  <>
+                    <h2 ref={reviewHeading} tabIndex={-1}>
+                      {t.sameTask}
+                    </h2>
+                    <p className="history-description">
+                      {t.repetitions(
+                        reviewCandidate.repeatCount,
+                        reviewCandidate.observedDays,
+                      )}
+                    </p>
+                    <ol className="list history-task-steps">
+                      {editor.steps.map((step, index) => (
+                        <li className="row" key={index}>
+                          <span className="history-step-number">
+                            {index + 1}
+                          </span>
+                          <span>{step}</span>
+                        </li>
+                      ))}
+                    </ol>
+                    <p className="history-description">{t.reviewExplanation}</p>
+                    {reviewCandidate.evidenceExpired ? (
+                      <p className="history-note">{t.expired}</p>
+                    ) : null}
+                  </>
+                ) : (
+                  <p className="history-description">{t.savedTaskHint}</p>
                 )}
-                {field(
-                  t.purpose,
-                  editor.purpose,
-                  (purpose) => setEditor({ ...editor, purpose }),
-                  1000,
-                  true,
-                )}
-                <fieldset className="history-group">
-                  <legend>{t.workflowApps}</legend>
-                  <div className="list">
-                    {APPS.map(([id, name]) => (
-                      <div key={id}>
-                        {check(name, editor.appIds.includes(id), () =>
+                <details className="more" open={!reviewCandidate || undefined}>
+                  <summary>{t.adjustDetails}</summary>
+                  {field(
+                    t.name,
+                    editor.name,
+                    (name) => setEditor({ ...editor, name }),
+                    200,
+                  )}
+                  {field(
+                    t.purpose,
+                    editor.purpose,
+                    (purpose) => setEditor({ ...editor, purpose }),
+                    1000,
+                    true,
+                  )}
+                  <fieldset className="history-group">
+                    <legend>{t.workflowApps}</legend>
+                    <div className="list">
+                      {APPS.map(([id, name]) => (
+                        <div key={id}>
+                          {check(name, editor.appIds.includes(id), () =>
+                            setEditor({
+                              ...editor,
+                              appIds: toggle(editor.appIds, id),
+                            }),
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </fieldset>
+                  {field(
+                    t.steps,
+                    editor.steps.join("\n"),
+                    (steps) =>
+                      setEditor({ ...editor, steps: steps.split("\n") }),
+                    15000,
+                    true,
+                  )}
+                  {field(
+                    t.exceptions,
+                    editor.exceptions,
+                    (exceptions) => setEditor({ ...editor, exceptions }),
+                    1000,
+                    true,
+                  )}
+                  {field(
+                    t.required,
+                    editor.requiredFeatures,
+                    (requiredFeatures) =>
+                      setEditor({ ...editor, requiredFeatures }),
+                    1000,
+                    true,
+                  )}
+                  <div className="history-columns">
+                    <label className="field">
+                      {t.frequency}
+                      <input
+                        className="input"
+                        type="number"
+                        min="0"
+                        max="10000"
+                        value={editor.frequencyPerWeek ?? ""}
+                        onChange={(e) =>
                           setEditor({
                             ...editor,
-                            appIds: toggle(editor.appIds, id),
-                          }),
-                        )}
-                      </div>
-                    ))}
+                            frequencyPerWeek:
+                              e.target.value === ""
+                                ? null
+                                : Number(e.target.value),
+                          })
+                        }
+                      />
+                    </label>
+                    <label className="field">
+                      {t.minutes}
+                      <input
+                        className="input"
+                        type="number"
+                        min="0"
+                        max="10080"
+                        value={editor.minutesPerRun ?? ""}
+                        onChange={(e) =>
+                          setEditor({
+                            ...editor,
+                            minutesPerRun:
+                              e.target.value === ""
+                                ? null
+                                : Number(e.target.value),
+                          })
+                        }
+                      />
+                    </label>
                   </div>
-                </fieldset>
-                {field(
-                  t.steps,
-                  editor.steps.join("\n"),
-                  (steps) => setEditor({ ...editor, steps: steps.split("\n") }),
-                  15000,
-                  true,
-                )}
-                {field(
-                  t.exceptions,
-                  editor.exceptions,
-                  (exceptions) => setEditor({ ...editor, exceptions }),
-                  1000,
-                  true,
-                )}
-                {field(
-                  t.required,
-                  editor.requiredFeatures,
-                  (requiredFeatures) =>
-                    setEditor({ ...editor, requiredFeatures }),
-                  1000,
-                  true,
-                )}
-                <div className="history-columns">
                   <label className="field">
-                    {t.frequency}
-                    <input
+                    {t.customCode}
+                    <select
                       className="input"
-                      type="number"
-                      min="0"
-                      max="10000"
-                      value={editor.frequencyPerWeek ?? ""}
+                      value={
+                        editor.ownsCustomCode === null
+                          ? "unknown"
+                          : String(editor.ownsCustomCode)
+                      }
                       onChange={(e) =>
                         setEditor({
                           ...editor,
-                          frequencyPerWeek:
-                            e.target.value === ""
+                          ownsCustomCode:
+                            e.target.value === "unknown"
                               ? null
-                              : Number(e.target.value),
+                              : e.target.value === "true",
                         })
                       }
-                    />
+                    >
+                      <option value="unknown">{t.unknown}</option>
+                      <option value="true">{t.yes}</option>
+                      <option value="false">{t.no}</option>
+                    </select>
                   </label>
-                  <label className="field">
-                    {t.minutes}
-                    <input
-                      className="input"
-                      type="number"
-                      min="0"
-                      max="10080"
-                      value={editor.minutesPerRun ?? ""}
-                      onChange={(e) =>
-                        setEditor({
-                          ...editor,
-                          minutesPerRun:
-                            e.target.value === ""
-                              ? null
-                              : Number(e.target.value),
-                        })
-                      }
-                    />
-                  </label>
-                </div>
-                <label className="field">
-                  {t.customCode}
-                  <select
-                    className="input"
-                    value={
-                      editor.ownsCustomCode === null
-                        ? "unknown"
-                        : String(editor.ownsCustomCode)
-                    }
-                    onChange={(e) =>
-                      setEditor({
-                        ...editor,
-                        ownsCustomCode:
-                          e.target.value === "unknown"
-                            ? null
-                            : e.target.value === "true",
-                      })
-                    }
-                  >
-                    <option value="unknown">{t.unknown}</option>
-                    <option value="true">{t.yes}</option>
-                    <option value="false">{t.no}</option>
-                  </select>
-                </label>
-                <div className="list">
-                  {check(t.confirmed, editor.confirmed, () =>
-                    setEditor({ ...editor, confirmed: !editor.confirmed }),
-                  )}
-                </div>
+                  {!reviewCandidate ? (
+                    <div className="list">
+                      {check(t.confirmed, editor.confirmed, () =>
+                        setEditor({ ...editor, confirmed: !editor.confirmed }),
+                      )}
+                    </div>
+                  ) : null}
+                </details>
                 <div className="history-actions">
                   <button
                     className="button primary"
@@ -455,16 +574,52 @@ function AccountHistory({ ctx }: { ctx: AppContext }) {
                       run(async () => {
                         invalidate();
                         await invokeCurrent("save_context_workflow", {
-                          workflow: editor,
+                          workflow: reviewCandidate
+                            ? { ...editor, confirmed: true }
+                            : editor,
                           accountScope: ctx.account?.accountScope,
                         });
                         setEditor(null);
+                        setReviewCandidate(null);
+                        setNotice(t.taskSaved);
                       })
                     }
                   >
-                    {t.save}
+                    {reviewCandidate ? t.confirmTask : t.save}
                   </button>
-                  <button className="button" onClick={() => setEditor(null)}>
+                  {reviewCandidate ? (
+                    <button
+                      className="button"
+                      onClick={() =>
+                        run(async () => {
+                          invalidate();
+                          await invokeCurrent("dismiss_context_candidate", {
+                            id: reviewCandidate.id,
+                          });
+                          const dismissedEpisodes = new Set(
+                            reviewCandidate.episodes.map(
+                              (episode) => episode.id,
+                            ),
+                          );
+                          setEpisodes((old) =>
+                            old.filter((id) => !dismissedEpisodes.has(id)),
+                          );
+                          setEditor(null);
+                          setReviewCandidate(null);
+                          setNotice(t.dismissed);
+                        })
+                      }
+                    >
+                      {t.notTask}
+                    </button>
+                  ) : null}
+                  <button
+                    className="button"
+                    onClick={() => {
+                      setEditor(null);
+                      setReviewCandidate(null);
+                    }}
+                  >
                     {ctx.s.cancel}
                   </button>
                 </div>
@@ -472,17 +627,48 @@ function AccountHistory({ ctx }: { ctx: AppContext }) {
             ) : (
               <>
                 <div className="history-heading">
-                  <h2>{t.workflows}</h2>
-                  <button
-                    className="button primary"
-                    disabled={busy}
-                    ref={newWorkflowButton}
-                    onClick={() => setEditor(blank())}
-                  >
-                    {t.newWorkflow}
-                  </button>
+                  <h2 ref={taskHeading} tabIndex={-1}>
+                    {t.candidates}
+                  </h2>
+                  <span className="tag">{t.pendingCount(pendingCount)}</span>
                 </div>
                 <p className="history-description">{t.workflowHint}</p>
+                {!pendingCount ? (
+                  <div className="list history-empty">
+                    <Icon name="reports" />
+                    <h3>{t.noCandidates}</h3>
+                    <p>{t.insufficient}</p>
+                    <button
+                      className="button"
+                      onClick={() => setSection("settings")}
+                    >
+                      {t.manageCapture}
+                    </button>
+                  </div>
+                ) : null}
+                {history?.candidates.map((candidate) => (
+                  <div className="list" key={candidate.id}>
+                    <Row
+                      title={candidateName(candidate)}
+                      detail={t.repetitions(
+                        candidate.repeatCount,
+                        candidate.observedDays,
+                      )}
+                      top
+                    >
+                      <button
+                        className="button primary"
+                        disabled={busy}
+                        onClick={() => startReview(candidate)}
+                      >
+                        {t.useCandidate}
+                      </button>
+                    </Row>
+                    <p className="history-note">{t.detectedHint}</p>
+                  </div>
+                ))}
+                <h2 className="history-subheading">{t.workflows}</h2>
+                <p className="history-description">{t.savedTaskHint}</p>
                 <div className="list">
                   {!history?.workflows.length ? (
                     <div className="history-empty">
@@ -499,7 +685,10 @@ function AccountHistory({ ctx }: { ctx: AppContext }) {
                           className="button"
                           disabled={busy}
                           aria-label={t.editNamed(workflow.name)}
-                          onClick={() => setEditor(workflow)}
+                          onClick={() => {
+                            setReviewCandidate(null);
+                            setEditor(workflow);
+                          }}
                         >
                           {t.edit}
                         </button>
@@ -526,67 +715,6 @@ function AccountHistory({ ctx }: { ctx: AppContext }) {
                     ))
                   )}
                 </div>
-                <h2 className="history-subheading">{t.candidates}</h2>
-                {!history?.candidates.length ? (
-                  <p className="history-description">{t.insufficient}</p>
-                ) : null}
-                {history?.candidates.map((candidate) => (
-                  <div className="list" key={candidate.id}>
-                    <Row
-                      title={candidate.steps
-                        .map(
-                          (step) =>
-                            `${appName(step.appId)}: ${contextLabel(ctx.lang, step.action)}`,
-                        )
-                        .join(" → ")}
-                      detail={t.repetitions(
-                        candidate.repeatCount,
-                        candidate.observedDays,
-                      )}
-                      top
-                    >
-                      <button
-                        className="button"
-                        disabled={busy}
-                        onClick={() =>
-                          setEditor({
-                            ...blank(),
-                            appIds: [
-                              ...new Set(candidate.steps.map((s) => s.appId)),
-                            ],
-                            steps: candidate.steps.map(
-                              (s) =>
-                                `${appName(s.appId)}: ${contextLabel(ctx.lang, s.action)}`,
-                            ),
-                            episodeIds: candidate.episodes.map((e) => e.id),
-                          })
-                        }
-                      >
-                        {t.useCandidate}
-                      </button>
-                    </Row>
-                    {candidate.evidenceExpired ? (
-                      <p className="history-note">{t.expired}</p>
-                    ) : null}
-                    <div className="history-actions history-inset">
-                      <button
-                        className="link history-danger"
-                        disabled={busy}
-                        onClick={() =>
-                          run(async () => {
-                            invalidate();
-                            await invokeCurrent("delete_context_history", {
-                              ids: candidate.eventIds,
-                              workflowId: null,
-                            });
-                          })
-                        }
-                      >
-                        {t.deleteSequence}
-                      </button>
-                    </div>
-                  </div>
-                ))}
               </>
             )}
           </section>
@@ -648,26 +776,22 @@ function AccountHistory({ ctx }: { ctx: AppContext }) {
                     </div>
                   </fieldset>
                 ) : null}
-                {!!history?.candidates.some(
-                  (candidate) => candidate.episodes.length,
-                ) ? (
+                {!!history?.episodes?.length ? (
                   <details className="more">
                     <summary>{t.selectedEpisodes}</summary>
                     <div className="list">
-                      {history.candidates
-                        .flatMap((candidate) => candidate.episodes)
-                        .map((episode) => (
-                          <div key={episode.id}>
-                            {check(
-                              `${episode.day} — ${t.repetitions(episode.repeatCount, 1)}`,
-                              episodes.includes(episode.id),
-                              () => {
-                                setEpisodes(toggle(episodes, episode.id));
-                                changeSelection();
-                              },
-                            )}
-                          </div>
-                        ))}
+                      {history.episodes.map((episode) => (
+                        <div key={episode.id}>
+                          {check(
+                            `${episode.day} — ${t.repetitions(episode.repeatCount, 1)}`,
+                            episodes.includes(episode.id),
+                            () => {
+                              setEpisodes(toggle(episodes, episode.id));
+                              changeSelection();
+                            },
+                          )}
+                        </div>
+                      ))}
                     </div>
                   </details>
                 ) : null}

@@ -421,6 +421,7 @@ export type ContextHistory = {
   active: boolean;
   events: ContextEvent[];
   candidates: ContextCandidate[];
+  episodes: ContextEpisode[];
   workflows: ContextWorkflow[];
   recurring: boolean;
   revocationPending: boolean;

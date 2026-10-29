@@ -381,9 +381,15 @@ access; Monitor does not grant it. Normalized actions are inferred interactions,
 not proof that an operation completed. No titles, full URLs, documents/cells,
 input values, keystrokes, clipboard, screenshots or audio are recorded.
 
-Review local events, gaps and repeated sequences in Work History. A candidate
-requires three occurrences across two days. Correct/save its business description
-or create one yourself. Missing evidence is shown as missing, never as unused
+Browse and search local app activity in Work History. Monitor detects repeated
+sequences automatically after three occurrences across two days, then asks whether
+the actions belong to one task. Confirm a prefilled task without completing a form;
+its name, purpose and exceptions can be adjusted optionally. Reviewed tasks retain
+the stable pattern identity, so polling does not create duplicates. “Not one task”
+hides that suggestion for 30 days without deleting activity. Review and dismissal
+are stored locally and do not share anything. “Save local copy” exports activity
+and tasks as unencrypted JSON to an explicitly chosen private file, without tokens
+or settings. Missing evidence is shown as missing, never as unused
 software or lack of work. Encrypted events expire after 48 hours; minimized
 occurrences after 30 days. Saved descriptions remain until deleted. The key lives
 in the current OS user's secure storage; there is no plaintext fallback. Accounts
