@@ -219,6 +219,8 @@ impl RuntimeGate {
 #[derive(Clone, Default)]
 pub struct ContextState {
     runtime: Arc<Mutex<Option<Runtime>>>,
+    // Session-only, content-free intent survives deleting/reopening an account's local files.
+    retained_revocations: Arc<Mutex<BTreeMap<String, RevocationScope>>>,
     pub gate: RuntimeGate,
     session_ready: Arc<std::sync::atomic::AtomicBool>,
     native_gate: Arc<Mutex<Option<SessionGate>>>,
@@ -229,6 +231,42 @@ pub struct ContextState {
     send_lock: Arc<tokio::sync::Mutex<()>>,
 }
 impl ContextState {
+    fn retire_runtime(&self, slot: &mut Option<Runtime>) -> Result<(), String> {
+        let mut retained = self
+            .retained_revocations
+            .lock()
+            .map_err(|_| "Pending revocation state unavailable")?;
+        if let Some(runtime) = slot.take() {
+            if let Some(scope) = runtime.pending_revocation {
+                retained.insert(runtime.identity.scope.clone(), scope);
+            } else {
+                retained.remove(&runtime.identity.scope);
+            }
+        }
+        Ok(())
+    }
+    fn restore_runtime(&self, mut runtime: Runtime) -> Result<Runtime, String> {
+        let pending = self
+            .retained_revocations
+            .lock()
+            .map_err(|_| "Pending revocation state unavailable")?
+            .remove(&runtime.identity.scope);
+        if let Some(pending) = pending {
+            runtime.require_revocation(pending);
+        }
+        Ok(runtime)
+    }
+    pub fn prepare_sign_out(&self) {
+        // Fence old scheduler snapshots immediately, even if a store worker owns the mutex.
+        self.sharing_generation.fetch_add(1, Ordering::SeqCst);
+        self.pause();
+        if let Ok(mut slot) = self.runtime.try_lock() {
+            if let Some(runtime) = slot.as_mut() {
+                runtime.recurring = None;
+                runtime.invalidate();
+            }
+        }
+    }
     pub fn pause(&self) {
         self.begin_action();
     }
@@ -294,7 +332,7 @@ async fn with_runtime<T: Send + 'static>(
         if slot.as_ref().is_none_or(|r| r.identity != identity) {
             state.pause_for_preparation();
             expected_epoch = expected_epoch.wrapping_add(1);
-            *slot = None;
+            state.retire_runtime(&mut slot)?;
             std::fs::create_dir_all(&dir).map_err(|_| "Context directory unavailable")?;
             #[cfg(unix)]
             {
@@ -313,7 +351,7 @@ async fn with_runtime<T: Send + 'static>(
                 .native_gate
                 .lock()
                 .map_err(|_| "Context gate unavailable")? = Some(collector.session_gate());
-            *slot = Some(Runtime {
+            *slot = Some(state.restore_runtime(Runtime {
                 identity,
                 store,
                 settings: ContextSettings::default(),
@@ -327,7 +365,7 @@ async fn with_runtime<T: Send + 'static>(
                 personal_os_login: false,
                 key_fingerprint: hash(&secret),
                 pending_revocation: None,
-            });
+            })?);
         }
         let r = slot.as_mut().ok_or("Context unavailable")?;
         if config.kill_switch || config.update_required() {
@@ -377,16 +415,18 @@ pub struct History {
 }
 #[tauri::command]
 pub async fn get_context_history(app: AppHandle, account_scope: String) -> Result<History, String> {
-    let active = app.state::<ContextState>().gate.is_active();
+    let state = app.state::<ContextState>().inner().clone();
     with_runtime_bound(&app, &account_scope, move |r| {
         Ok(History {
             own_os_login: r.personal_os_login,
             settings: r.settings.clone(),
-            active: active && r.settings.enabled && !r.settings.paused,
+            active: state.gate.is_active() && r.settings.enabled && !r.settings.paused,
             events: r.store.events(),
             candidates: r.store.candidates(),
             workflows: r.store.workflows(),
-            recurring: r.recurring.is_some(),
+            recurring: r.recurring.as_ref().is_some_and(|grant| {
+                grant.selection_generation == state.sharing_generation.load(Ordering::SeqCst)
+            }),
             revocation_pending: r.revocation_pending(),
             error: r.error.clone(),
             gap: r.last_gap,
@@ -526,16 +566,7 @@ pub async fn delete_context_history(
             .map_err(|_| "App directory unavailable")?
             .join("context");
         tauri::async_runtime::spawn_blocking(move || {
-            let mut slot = state.runtime.lock().map_err(|_| "Context unavailable")?;
-            if state.action_generation.load(Ordering::SeqCst) != operation
-                || slot
-                    .as_ref()
-                    .is_some_and(|r| r.identity.scope != account_scope)
-            {
-                return Err("Account changed".into());
-            }
-            *slot = None;
-            erase_context_files(&dir)
+            erase_local_runtime(&state, &dir, &account_scope, operation)
         })
         .await
         .map_err(|_| "Context worker unavailable")??;
@@ -1260,7 +1291,7 @@ pub fn start(app: AppHandle) {
                 if let Some(r) = slot.as_mut() {
                     if r.identity != id {
                         state.pause();
-                        *slot = None;
+                        let _ = state.retire_runtime(&mut slot);
                     }
                 }
             }
@@ -1392,6 +1423,111 @@ mod tests {
             key_fingerprint: hash(&[17; 32]),
             pending_revocation: None,
         }
+    }
+    #[tokio::test]
+    async fn final_pending_revocation_survives_full_local_erasure() {
+        for pending in [RevocationScope::All, RevocationScope::Summaries] {
+            let dir =
+                std::env::temp_dir().join(format!("context-erasure-intent-{}", Uuid::new_v4()));
+            let state = ContextState::default();
+            let identity = Identity::from_config(&AgentConfig::default());
+            let scope = identity.scope.clone();
+            let path = dir.join(format!("{scope}.bin"));
+            let mut runtime = synthetic_runtime(&path, identity.clone());
+            runtime
+                .store
+                .append(ContextEvent::coverage_gap(Utc::now(), Gap::Unsupported))
+                .unwrap();
+            runtime.require_revocation(pending);
+            *state.runtime.lock().unwrap() = Some(runtime);
+            let operation = state.begin_action();
+            let summary = invalidate_selection_operation(&state, &scope, |_| async {
+                if pending == RevocationScope::All {
+                    Ok(())
+                } else {
+                    Err("synthetic offline".into())
+                }
+            })
+            .await;
+            assert_eq!(summary.is_ok(), pending == RevocationScope::All);
+            erase_local_runtime(&state, &dir, &scope, operation).unwrap();
+            assert!(!path.exists());
+            // Another account cannot acquire the retained intent.
+            let mut other = identity.clone();
+            other.scope = "other-account".into();
+            let unrelated = state
+                .restore_runtime(synthetic_runtime(&dir.join("other.bin"), other))
+                .unwrap();
+            assert!(!unrelated.revocation_pending());
+            drop(unrelated);
+            // Same restore boundary used by get_context_history's fresh runtime initialization.
+            let restored = state
+                .restore_runtime(synthetic_runtime(&path, identity))
+                .unwrap();
+            assert_eq!(
+                restored.pending_revocation,
+                Some(pending),
+                "erasure cannot erase unconfirmed cloud intent"
+            );
+            assert!(restored.error.is_some());
+            assert!(restored.revocation_pending());
+            *state.runtime.lock().unwrap() = Some(restored);
+            {
+                let mut slot = state.runtime.lock().unwrap();
+                slot.as_mut().unwrap().acknowledge_revocation(pending);
+                state.retire_runtime(&mut slot).unwrap();
+            }
+            let clean = state
+                .restore_runtime(synthetic_runtime(
+                    &path,
+                    Identity::from_config(&AgentConfig::default()),
+                ))
+                .unwrap();
+            assert!(!clean.revocation_pending());
+            drop(clean);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+    #[tokio::test]
+    async fn final_sign_out_fences_scheduler_while_remote_revoke_is_pending() {
+        let dir = std::env::temp_dir().join(format!("context-sign-out-{}", Uuid::new_v4()));
+        let state = ContextState::default();
+        let identity = Identity::from_config(&AgentConfig::default());
+        let mut runtime = synthetic_runtime(&dir.join("synthetic.bin"), identity.clone());
+        runtime.recurring = Some(Recurring {
+            selection_generation: 0,
+            grant_id: Uuid::new_v4(),
+            selection_sha256: "synthetic".into(),
+            day: None,
+            identity,
+        });
+        *state.runtime.lock().unwrap() = Some(runtime);
+        let day = Utc::now().date_naive();
+        let snapshot = next_summary(&state, day).unwrap();
+        let busy = state.runtime.lock().unwrap();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (release, waiting) = tokio::sync::oneshot::channel();
+        let signing_out = sign_out_context(&state, async {
+            started.send(()).unwrap();
+            waiting.await.unwrap();
+        });
+        let scheduler = async {
+            ready.await.unwrap();
+            drop(busy);
+            let no_new_request = next_summary(&state, day).is_none();
+            let stale_snapshot =
+                snapshot.selection_generation != state.sharing_generation.load(Ordering::SeqCst);
+            release.send(()).unwrap();
+            (no_new_request, stale_snapshot)
+        };
+        let ((), (no_new_request, stale_snapshot)) = tokio::join!(signing_out, scheduler);
+        assert!(
+            no_new_request,
+            "no daily request may start during sign-out's remote wait"
+        );
+        assert!(stale_snapshot);
+        *state.runtime.lock().unwrap() = None;
+        std::fs::remove_dir_all(dir).unwrap();
     }
     #[tokio::test]
     async fn summary_ack_cannot_clear_a_failed_explicit_revoke_all() {
@@ -1877,6 +2013,28 @@ pub async fn cancel_context_preview(app: AppHandle, account_scope: String) {
     };
 }
 
+pub async fn sign_out_context<F: std::future::Future>(
+    state: &ContextState,
+    remote_revoke: F,
+) -> F::Output {
+    state.prepare_sign_out();
+    remote_revoke.await
+}
+fn erase_local_runtime(
+    state: &ContextState,
+    dir: &std::path::Path,
+    scope: &str,
+    operation: u64,
+) -> Result<(), String> {
+    let mut slot = state.runtime.lock().map_err(|_| "Context unavailable")?;
+    if state.action_generation.load(Ordering::SeqCst) != operation
+        || slot.as_ref().is_some_and(|r| r.identity.scope != scope)
+    {
+        return Err("Account changed".into());
+    }
+    state.retire_runtime(&mut slot)?;
+    erase_context_files(dir)
+}
 fn context_scopes(dir: &std::path::Path) -> Result<Vec<String>, String> {
     if !dir.exists() {
         return Ok(vec![]);

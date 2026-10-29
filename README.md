@@ -80,9 +80,15 @@ Your browsers' history is read only if you turn on the browser check, and even
 then web addresses and page titles are never stored, written to a report or sent.
 
 It never collects window titles, document names, screen contents, keystrokes,
-the clipboard, the files on the computer, or how long any app was used. The
-**Privacy** page in the app lists everything the app has sent, exactly as sent.
-Details are in [How it works](#how-it-works) and [SECURITY.md](SECURITY.md).
+the clipboard, or the files on the computer. Existing opted-in local app usage
+stores foreground intervals for up to 14 days; connected usage uploads reduce
+these to daily app/device presence, without focus intervals or durations.
+
+The **Privacy** page shows the inventory, usage, account and report request history
+that the app records, with credentials redacted. Work History presents its reviewed
+package and delivery status separately; richer context is not copied into that
+legacy request log. Details are in [How it works](#how-it-works) and
+[SECURITY.md](SECURITY.md).
 
 ## For IT teams
 

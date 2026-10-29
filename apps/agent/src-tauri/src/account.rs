@@ -512,7 +512,8 @@ pub async fn forget_token(app: &AppHandle) {
 
 /// Forgets the account here: the keychain secret, the names and any token.
 pub async fn forget_account(app: &AppHandle) -> Result<(), String> {
-    app.state::<crate::context_history::ContextState>().pause();
+    app.state::<crate::context_history::ContextState>()
+        .prepare_sign_out();
     let state: State<'_, AgentState> = app.state();
     let previous = {
         let mut config = state.config.lock().await;
@@ -533,9 +534,16 @@ pub async fn forget_account(app: &AppHandle) -> Result<(), String> {
 /// Sign out: revokes the credential in Sanka when it can, then forgets it.
 #[tauri::command]
 pub async fn sign_out(app: AppHandle) -> Result<AccountView, String> {
-    app.state::<crate::context_history::ContextState>().pause();
-    // Without the network the secret is still deleted here, so it cannot send.
-    let _ = tokio::time::timeout(SIGN_OUT_TIMEOUT, revoke(&app)).await;
+    let context = app
+        .state::<crate::context_history::ContextState>()
+        .inner()
+        .clone();
+    // Stop local scheduling before polling the server revoke future.
+    let _ = crate::context_history::sign_out_context(
+        &context,
+        tokio::time::timeout(SIGN_OUT_TIMEOUT, revoke(&app)),
+    )
+    .await;
     forget_account(&app).await?;
     *app.state::<AgentState>().account_error.lock().await = None;
     Ok(account_view(&app).await)
