@@ -389,7 +389,8 @@ the stable pattern identity, so polling does not create duplicates. “Not one t
 hides that suggestion for 30 days without deleting activity. Review and dismissal
 are stored locally and do not share anything. “Save local copy” exports activity
 and tasks as unencrypted JSON to an explicitly chosen private file, without tokens
-or settings. Missing evidence is shown as missing, never as unused
+or settings. Exported files remain where the person saved them; erasing Monitor
+history does not remove independent exports. Missing evidence is shown as missing, never as unused
 software or lack of work. Encrypted events expire after 48 hours; minimized
 occurrences after 30 days. Saved descriptions remain until deleted. The key lives
 in the current OS user's secure storage; there is no plaintext fallback. Accounts
