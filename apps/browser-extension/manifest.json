@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "Sanka Monitor — Sheets context",
+  "description": "Recognize selected Google Sheets commands locally. Review in Sanka Monitor before sharing.",
+  "version": "0.1.0",
+  "minimum_chrome_version": "120",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAs1FSHULfs/aP7l80OVWRn4WJHMAOZyAHtHGDjhv/NH87aavxsZ6XMLCQfKZvyxKbvgsxrQK5H44+w7X0jwK+3yas3C+YEFK/oDueWAmEW97wxxhz70K7GisP33SehE3KEz8RKXB0ifBMwGWhZoOJ14AqbFwklpc+3FDcgYbZprUpvgewpmPGTR/VCKPlY6b7CcvWmGxrowGNZAxmp0VWYr3Nh6sKBrmc9hINpTqtRi/oahFrCe7tg5pTn6qS8XnFXNOaUS+nAfA8so1p8idxOZLXaBnweeVu1OA/1VgbqNB/dFSDFospGVuomaPaYm438BpUjkbLNn9756cE4gwq4QIDAQAB",
+  "incognito": "not_allowed",
+  "permissions": ["storage", "scripting", "nativeMessaging"],
+  "optional_host_permissions": ["https://docs.google.com/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  }
+}
