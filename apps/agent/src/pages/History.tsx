@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AppContext } from "../context";
 import type { ContextHistory, ContextPreview, ContextReceipt, ContextWorkflow } from "../types";
@@ -26,7 +26,27 @@ const blank = (): ContextWorkflow => ({
   episodeIds: [],
 });
 export function History({ ctx }: { ctx: AppContext }) {
+  if (!ctx.account?.accountScope) return <p>{ctx.s.loading}</p>;
+  return <AccountHistory key={ctx.account.accountScope} ctx={ctx} />;
+}
+function AccountHistory({ ctx }: { ctx: AppContext }) {
   const t = CONTEXT_STRINGS[ctx.lang];
+  const mounted = useRef(true);
+  useLayoutEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  const invokeCurrent = useCallback(
+    async <T,>(command: string, args?: Record<string, unknown>): Promise<T> => {
+      if (!mounted.current) throw new Error("Account changed");
+      const result = await invoke<T>(command, { ...args, accountScope: ctx.account?.accountScope });
+      if (!mounted.current) throw new Error("Account changed");
+      return result;
+    },
+    [ctx.account?.accountScope],
+  );
   const [history, setHistory] = useState<ContextHistory | null>(null);
   const [busy, setBusy] = useState(false),
     [message, setMessage] = useState("");
@@ -44,52 +64,56 @@ export function History({ ctx }: { ctx: AppContext }) {
   const [editor, setEditor] = useState<ContextWorkflow | null>(null);
   const initialized = useRef(false);
   const refresh = useCallback(async () => {
-    const data = await invoke<ContextHistory>("get_context_history");
+    if (!mounted.current) return;
+    const data = await invokeCurrent<ContextHistory>("get_context_history");
     setHistory(data);
     if (!initialized.current) {
       setAllowed(data.settings.allowedAppIds);
       setOwnLogin(data.ownOsLogin === true);
       initialized.current = true;
     }
-  }, []);
+  }, [invokeCurrent]);
   useEffect(() => {
-    refresh().catch((e) => setMessage(String(e)));
+    refresh().catch((e) => {
+      if (mounted.current) setMessage(String(e));
+    });
     const timer = setInterval(() => {
       if (!document.hidden) refresh().catch(() => {});
     }, 5000);
     return () => clearInterval(timer);
-  }, [refresh, ctx.account]);
+  }, [refresh]);
   const invalidate = () => {
+    if (!mounted.current) return;
     setPreview(null);
-    invoke("cancel_context_preview").catch(() => {});
+    invokeCurrent("cancel_context_preview").catch(() => {});
   };
-  useEffect(() => {
-    initialized.current = false;
-    setPreview(null);
-    setReceipt(null);
-    setAllowed([]);
-    setApps([]);
-    setEpisodes([]);
-    setWorkflows([]);
-    setOwnLogin(false);
-  }, [ctx.account]);
   async function run(action: () => Promise<unknown>) {
+    if (!mounted.current) return;
     setBusy(true);
     setMessage("");
     try {
       await action();
       await refresh();
     } catch (e) {
-      setMessage(String(e));
+      if (mounted.current) setMessage(String(e));
     } finally {
-      await refresh().catch(() => {});
-      setBusy(false);
+      if (mounted.current) {
+        await refresh().catch(() => {});
+        if (mounted.current) setBusy(false);
+      }
     }
   }
+  const changeSelection = () => {
+    if (!mounted.current) return;
+    setPreview(null);
+    void run(() =>
+      invokeCurrent("invalidate_context_selection", { accountScope: ctx.account?.accountScope }),
+    );
+  };
   const settings = (enabled: boolean, paused: boolean) =>
     run(async () => {
       invalidate();
-      await invoke("set_context_settings", {
+      await invokeCurrent("set_context_settings", {
         settings: {
           enabled,
           paused,
@@ -144,7 +168,7 @@ export function History({ ctx }: { ctx: AppContext }) {
               invalidate();
               if (history?.active)
                 void run(() =>
-                  invoke("set_context_settings", {
+                  invokeCurrent("set_context_settings", {
                     settings: {
                       enabled: true,
                       paused: true,
@@ -185,7 +209,9 @@ export function History({ ctx }: { ctx: AppContext }) {
             disabled={busy}
             onClick={() =>
               run(async () =>
-                setMessage(await invoke<string>("register_context_browser_host", { browser })),
+                setMessage(
+                  await invokeCurrent<string>("register_context_browser_host", { browser }),
+                ),
               )
             }
           >
@@ -217,7 +243,7 @@ export function History({ ctx }: { ctx: AppContext }) {
         onClick={() =>
           run(async () => {
             invalidate();
-            await invoke("delete_context_history", { ids: selected, workflowId: null });
+            await invokeCurrent("delete_context_history", { ids: selected, workflowId: null });
             setSelected([]);
           })
         }
@@ -261,7 +287,7 @@ export function History({ ctx }: { ctx: AppContext }) {
             onClick={() =>
               run(async () => {
                 invalidate();
-                await invoke("delete_context_history", {
+                await invokeCurrent("delete_context_history", {
                   ids: candidate.eventIds,
                   workflowId: null,
                 });
@@ -279,7 +305,7 @@ export function History({ ctx }: { ctx: AppContext }) {
                   episodes.includes(episode.id),
                   () => {
                     setEpisodes(toggle(episodes, episode.id));
-                    invalidate();
+                    changeSelection();
                   },
                 )}
               </div>
@@ -295,7 +321,7 @@ export function History({ ctx }: { ctx: AppContext }) {
         <div className="box" key={workflow.id}>
           {check(workflow.name, workflows.includes(workflow.id), () => {
             setWorkflows(toggle(workflows, workflow.id));
-            invalidate();
+            changeSelection();
           })}
           <p>{workflow.purpose}</p>
           {!workflow.episodeIds.length ? <p>{t.expired}</p> : null}
@@ -308,7 +334,10 @@ export function History({ ctx }: { ctx: AppContext }) {
             onClick={() =>
               run(async () => {
                 invalidate();
-                await invoke("delete_context_history", { ids: null, workflowId: workflow.id });
+                await invokeCurrent("delete_context_history", {
+                  ids: null,
+                  workflowId: workflow.id,
+                });
                 setWorkflows(workflows.filter((id) => id !== workflow.id));
               })
             }
@@ -411,7 +440,10 @@ export function History({ ctx }: { ctx: AppContext }) {
             onClick={() =>
               run(async () => {
                 invalidate();
-                await invoke("save_context_workflow", { workflow: editor });
+                await invokeCurrent("save_context_workflow", {
+                  workflow: editor,
+                  accountScope: ctx.account?.accountScope,
+                });
                 setEditor(null);
               })
             }
@@ -432,7 +464,7 @@ export function History({ ctx }: { ctx: AppContext }) {
           <div key={id}>
             {check(name, apps.includes(id), () => {
               setApps(toggle(apps, id));
-              invalidate();
+              changeSelection();
             })}
           </div>
         ))}
@@ -443,7 +475,7 @@ export function History({ ctx }: { ctx: AppContext }) {
             value={audience}
             onChange={(e) => {
               setAudience(e.target.value);
-              invalidate();
+              changeSelection();
             }}
           >
             <option value="personal">{t.personal}</option>
@@ -452,7 +484,7 @@ export function History({ ctx }: { ctx: AppContext }) {
         </label>
         {check(t.includeScan, scan, () => {
           setScan(!scan);
-          invalidate();
+          changeSelection();
         })}
         <button
           className="button"
@@ -460,7 +492,7 @@ export function History({ ctx }: { ctx: AppContext }) {
           onClick={() =>
             run(async () =>
               setPreview(
-                await invoke<ContextPreview>("prepare_context_package", {
+                await invokeCurrent<ContextPreview>("prepare_context_package", {
                   ownOsLogin: ownLogin,
                   selection: {
                     appIds: apps,
@@ -489,7 +521,9 @@ export function History({ ctx }: { ctx: AppContext }) {
             onClick={() =>
               run(async () =>
                 setReceipt(
-                  await invoke<ContextReceipt>("send_context_package", { token: preview.token }),
+                  await invokeCurrent<ContextReceipt>("send_context_package", {
+                    token: preview.token,
+                  }),
                 ),
               )
             }
@@ -508,11 +542,15 @@ export function History({ ctx }: { ctx: AppContext }) {
               audience !== "company" ||
               !!episodes.length ||
               scan ||
-              history?.recurring
+              history?.recurring ||
+              history?.revocationPending
             }
             onClick={() =>
               run(() =>
-                invoke("enable_context_summary", { token: preview.token, ownOsLogin: ownLogin }),
+                invokeCurrent("enable_context_summary", {
+                  token: preview.token,
+                  ownOsLogin: ownLogin,
+                }),
               )
             }
           >
@@ -521,6 +559,7 @@ export function History({ ctx }: { ctx: AppContext }) {
         </div>
       ) : null}
       {history?.recurring ? <p>{t.recurringOn}</p> : null}
+      {history?.revocationPending ? <p role="status">{t.revocationPending}</p> : null}
       {receipt ? (
         <div className="box">
           <p>
@@ -529,7 +568,7 @@ export function History({ ctx }: { ctx: AppContext }) {
           <button
             className="button"
             disabled={busy}
-            onClick={() => run(() => invoke("open_context_result", { receipt }))}
+            onClick={() => run(() => invokeCurrent("open_context_result", { receipt }))}
           >
             {t.result}
           </button>
@@ -538,7 +577,7 @@ export function History({ ctx }: { ctx: AppContext }) {
             disabled={busy}
             onClick={() =>
               run(async () => {
-                await invoke("delete_shared_context", { packageId: receipt.packageId });
+                await invokeCurrent("delete_shared_context", { packageId: receipt.packageId });
                 setReceipt(null);
                 invalidate();
               })
@@ -555,7 +594,7 @@ export function History({ ctx }: { ctx: AppContext }) {
         onClick={() =>
           run(async () => {
             invalidate();
-            await invoke("delete_shared_context", { packageId: null });
+            await invokeCurrent("delete_shared_context", { packageId: null });
             setReceipt(null);
           })
         }
@@ -570,7 +609,7 @@ export function History({ ctx }: { ctx: AppContext }) {
           onClick={() =>
             run(async () => {
               invalidate();
-              await invoke("delete_context_history", { ids: null, workflowId: null });
+              await invokeCurrent("delete_context_history", { ids: null, workflowId: null });
               setSelected([]);
               setEpisodes([]);
               setWorkflows([]);

@@ -287,6 +287,8 @@ export type SavedReport = {
 
 /** The Sanka account the app sends reports as (`get_account`). */
 export type Account = {
+  /** Opaque destination/workspace/device identity; never a credential. */
+  accountScope: string;
   signedIn: boolean;
   userName: string | null;
   userEmail: string | null;
@@ -421,6 +423,7 @@ export type ContextHistory = {
   candidates: ContextCandidate[];
   workflows: ContextWorkflow[];
   recurring: boolean;
+  revocationPending: boolean;
   error: string | null;
   gap: ContextGap | null;
 };

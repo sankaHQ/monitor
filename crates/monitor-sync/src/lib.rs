@@ -892,6 +892,7 @@ pub enum ContextRoute {
     Packages,
     DeletePackage(uuid::Uuid),
     Revoke,
+    RevokeSummaries,
     SummaryGrants,
     Summaries,
 }
@@ -904,6 +905,7 @@ impl ContextRoute {
             Self::Packages => (Method::POST, "packages".into()),
             Self::DeletePackage(id) => (Method::DELETE, format!("packages/{id}")),
             Self::Revoke => (Method::DELETE, "grants".into()),
+            Self::RevokeSummaries => (Method::DELETE, "summary-grants".into()),
             Self::SummaryGrants => (Method::POST, "summary-grants".into()),
             Self::Summaries => (Method::POST, "summaries".into()),
         };

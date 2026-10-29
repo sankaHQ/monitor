@@ -8,11 +8,16 @@ async fn context_transport_keeps_preview_bytes_and_uses_account_routes() {
     let base = format!("http://{}", listener.local_addr().unwrap());
     let server = std::thread::spawn(move || {
         let mut captured = Vec::new();
-        for data in [
+        for (index, data) in [
             serde_json::json!({"schemaVersions":[1],"policyVersion":1,"maxBytes":1048576}),
             serde_json::json!({"accepted":true}),
             serde_json::json!({"revoked":true}),
-        ] {
+            serde_json::json!({"revoked":true}),
+            serde_json::Value::Null,
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let (mut stream, _) = listener.accept().unwrap();
             stream
                 .set_read_timeout(Some(std::time::Duration::from_secs(3)))
@@ -44,7 +49,12 @@ async fn context_transport_keeps_preview_bytes_and_uses_account_routes() {
                     .to_string();
             write!(
                 stream,
-                "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                "HTTP/1.1 {}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                if index == 4 {
+                    "404 Not Found"
+                } else {
+                    "200 OK"
+                },
                 body.len()
             )
             .unwrap();
@@ -66,11 +76,28 @@ async fn context_transport_keeps_preview_bytes_and_uses_account_routes() {
         .context_request("account-runtime", ContextRoute::Revoke, None)
         .await
         .unwrap();
+    let _: serde_json::Value = client
+        .context_request("account-runtime", ContextRoute::RevokeSummaries, None)
+        .await
+        .unwrap();
+    let unsupported = client
+        .context_request::<serde_json::Value>(
+            "account-runtime",
+            ContextRoute::RevokeSummaries,
+            None,
+        )
+        .await;
+    assert!(
+        matches!(unsupported, Err(SyncError::Api { status: 404, .. })),
+        "unsupported summary revocation must not fall back to revoke-all"
+    );
     let requests = server.join().unwrap();
     for (request, method) in requests.iter().zip([
         "GET /api/v2/monitor/desktop/context/capabilities HTTP/1.1",
         "POST /api/v2/monitor/desktop/context/packages HTTP/1.1",
         "DELETE /api/v2/monitor/desktop/context/grants HTTP/1.1",
+        "DELETE /api/v2/monitor/desktop/context/summary-grants HTTP/1.1",
+        "DELETE /api/v2/monitor/desktop/context/summary-grants HTTP/1.1",
     ]) {
         let text = String::from_utf8_lossy(request);
         assert!(text.starts_with(method));
@@ -87,5 +114,5 @@ async fn context_transport_keeps_preview_bytes_and_uses_account_routes() {
     assert_eq!(parsed, body);
     assert_eq!(parsed["packageJson"], original);
     assert!(requests[0].ends_with(b"\r\n\r\n"));
-    assert!(requests[2].ends_with(b"\r\n\r\n"));
+    assert!(requests[2..].iter().all(|r| r.ends_with(b"\r\n\r\n")));
 }

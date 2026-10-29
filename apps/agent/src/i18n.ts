@@ -622,7 +622,7 @@ export const STRINGS: Record<Lang, Strings> = {
       unconfirmed: "delivery unconfirmed",
       details: "Details",
       leavesLocalLong:
-        "Nothing, unless you sign in to send reports to Sanka. Scans and reports stay on this computer. To finish signing in, the app sends Sanka only a one-time sign-in code with its verifier, its version and whether this is a Mac or a Windows PC. Sending a report and signing out use a one-hour token, which the app gets in exchange for its credential (a device ID and secret) and its version. Signing out revokes the credential in Sanka, and a cancelled or replaced sign-in is revoked the same way. These requests and the reports you send are listed here, exactly as sent, with the code, verifier and secret hidden. The only automatic network request is the update check, which downloads the latest version number from release.sanka.com and sends nothing about this computer.",
+        "Nothing, unless you sign in and choose to share a report or reviewed Work History content. Scans and reports otherwise stay on this computer. To finish signing in, the app sends Sanka only a one-time sign-in code with its verifier, its version and whether this is a Mac or a Windows PC. Sending a report and signing out use a one-hour token, which the app gets in exchange for its credential (a device ID and secret) and its version. Signing out revokes the credential in Sanka, and a cancelled or replaced sign-in is revoked the same way. These requests and the reports you send are listed here, exactly as sent, with the code, verifier and secret hidden. When separately approved daily Work History sharing is off, the only automatic external request in local mode is the update check: it downloads the latest version number from release.sanka.com and sends nothing about this computer. If you enable daily sharing, the app also sends daily summaries for the fixed selection of apps and workflow descriptions you approved in Work History, with coverage information. It never adds new apps or descriptions automatically.",
       leavesConnectedLong:
         "This computer is connected to a workspace: check-ins send its security checks and installed programs, and app usage and the SaaS it used only if you turned that sharing on. Check-ins and uploads are listed here, exactly as sent, and so are your Sanka account's sign-in, token requests, sent reports and sign-out, with the sign-in code, its verifier and the device secret hidden. The token request that comes first each time the app contacts your workspace is not listed.",
       readsTitle: "What Sanka Monitor reads",
@@ -983,7 +983,7 @@ export const STRINGS: Record<Lang, Strings> = {
       unconfirmed: "配信未確認",
       details: "詳細",
       leavesLocalLong:
-        "Sankaにレポートを送るためにサインインしない限り、ありません。スキャン結果とレポートはこのPCに残ります。サインインを完了するためにアプリがSankaに送るのは、ワンタイムのサインインコードとその検証用の値、アプリのバージョン、MacかWindowsかの区別だけです。レポートの送信とサインアウトには1時間有効なトークンを使い、アプリはトークンを受け取るために、認証情報（デバイスIDとシークレット）とアプリのバージョンを送ります。サインアウトでは、Sankaでその認証情報を無効にします。途中でキャンセルしたり、やり直したりしたサインインの認証情報も、同じように無効にします。これらの通信と送信したレポートは、ここに送信したとおり表示します（サインインコード、検証用の値、シークレットは伏せて表示します）。自動で行う通信はアップデートの確認だけで、release.sanka.com から最新のバージョン番号を取得し、このPCの情報は送信しません。",
+        "レポートや確認済みの作業履歴を共有するためにサインインし、送信を選択した場合を除き、端末の情報は送信しません。スキャン結果とレポートは、それ以外ではこのPCに残ります。サインインを完了するためにアプリがSankaに送るのは、ワンタイムのサインインコードとその検証用の値、アプリのバージョン、MacかWindowsかの区別だけです。レポートの送信とサインアウトには1時間有効なトークンを使い、アプリはトークンを受け取るために、認証情報（デバイスIDとシークレット）とアプリのバージョンを送ります。サインアウトでは、Sankaでその認証情報を無効にします。途中でキャンセルしたり、やり直したりしたサインインの認証情報も、同じように無効にします。これらの通信と送信したレポートは、ここに送信したとおり表示します（サインインコード、検証用の値、シークレットは伏せて表示します）。作業履歴の日次共有をオフにしているローカルモードでは、自動で行う外部通信はアップデートの確認だけです。release.sanka.com から最新のバージョン番号を取得し、このPCの情報は送信しません。別途同意して日次共有を有効にすると、作業履歴で承認した固定のアプリとワークフローの説明を対象に、記録範囲の情報を含む日次の要約も送信します。新しいアプリや説明が自動的に追加されることはありません。",
       leavesConnectedLong:
         "このPCはワークスペースに接続しています。チェックインでセキュリティチェックとインストール済みのソフトウェアを送信し、アプリの利用データと使ったSaaSは、それぞれ共有をオンにした場合だけ送信します。チェックインとアップロードに加え、Sankaのアカウントで行うサインイン、トークンの要求、レポートの送信、サインアウトも、ここに送信したとおり表示します（サインインコード、検証用の値、シークレットは伏せて表示します）。ワークスペースと通信するたびに最初に行うトークンの要求は表示しません。",
       readsTitle: "Sanka Monitorが読み取る情報",
@@ -1156,6 +1156,7 @@ export const CONTEXT_STRINGS = {
     recurringHint:
       "Separate consent: only these frozen apps and workflow descriptions, never episodes or scans. Edits require revocation and a new preview. Sign-out or restart stops recurring sharing. The selection never expands automatically.",
     recurringOn: "Daily company sharing enabled for this app session",
+    revocationPending: "Daily sharing is stopped locally. Remote revocation is pending; retry Revoke before sharing again.",
     revoke: "Revoke all context grants and delete related cloud content",
     remoteHint:
       "Failed requests mean delivery or deletion is unconfirmed. Retry the same preview, or revoke all grants to confirm removal. Account changes invalidate previews and keep local history in separate encrypted stores.",
@@ -1226,6 +1227,7 @@ export const CONTEXT_STRINGS = {
     recurringHint:
       "別途同意が必要です。確定したアプリと説明のみを含み、操作の記録やスキャン結果は含みません。編集時は共有を取り消し、再度プレビューを確認してください。サインアウトや再起動で停止します。共有範囲が自動的に広がることはありません。",
     recurringOn: "このアプリの起動中は会社向けの日次共有が有効です",
+    revocationPending: "端末からの日次共有は停止しています。クラウドの共有取消は未確認です。再度共有する前に、共有許可の取消を再試行してください。",
     revoke: "すべての共有許可を取り消し、関連するクラウドの内容を削除",
     remoteHint:
       "失敗したリクエストは、送信または削除が未確認です。同じプレビューで再試行するか、共有許可をすべて取り消して削除を確認してください。アカウント変更時はプレビューが無効になり、履歴は別々の暗号化ストレージに保持されます。",

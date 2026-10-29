@@ -107,8 +107,12 @@ impl Identity {
         }
     }
 }
+pub(super) fn account_scope(config: &AgentConfig) -> String {
+    Identity::from_config(config).scope
+}
 #[derive(Clone)]
 struct Recurring {
+    selection_generation: u64,
     grant_id: Uuid,
     selection_sha256: String,
     day: Option<chrono::NaiveDate>,
@@ -189,11 +193,24 @@ pub struct ContextState {
     session_ready: Arc<std::sync::atomic::AtomicBool>,
     native_gate: Arc<Mutex<Option<SessionGate>>>,
     epoch: Arc<AtomicU64>,
+    action_generation: Arc<AtomicU64>,
+    sharing_generation: Arc<AtomicU64>,
     // Shared between UI operations and sends; mutation never waits for network I/O.
     send_lock: Arc<tokio::sync::Mutex<()>>,
 }
 impl ContextState {
     pub fn pause(&self) {
+        self.begin_action();
+    }
+    fn begin_action(&self) -> u64 {
+        let generation = self
+            .action_generation
+            .fetch_add(1, Ordering::SeqCst)
+            .wrapping_add(1);
+        self.pause_for_preparation();
+        generation
+    }
+    fn pause_for_preparation(&self) {
         self.gate.pause();
         if let Ok(gate) = self.native_gate.lock() {
             if let Some(gate) = gate.as_ref() {
@@ -245,7 +262,7 @@ async fn with_runtime<T: Send + 'static>(
             return Err("Context state changed; try again".into());
         }
         if slot.as_ref().is_none_or(|r| r.identity != identity) {
-            state.pause();
+            state.pause_for_preparation();
             expected_epoch = expected_epoch.wrapping_add(1);
             *slot = None;
             std::fs::create_dir_all(&dir).map_err(|_| "Context directory unavailable")?;
@@ -300,6 +317,20 @@ async fn with_runtime<T: Send + 'static>(
     .await
     .map_err(|_| "Context worker unavailable")?
 }
+async fn with_runtime_bound<T: Send + 'static>(
+    app: &AppHandle,
+    scope: &str,
+    f: impl FnOnce(&mut Runtime) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let scope = scope.to_owned();
+    with_runtime(app, move |r| {
+        if r.identity.scope != scope {
+            return Err("Account changed; reopen Work History".into());
+        }
+        f(r)
+    })
+    .await
+}
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct History {
@@ -310,13 +341,14 @@ pub struct History {
     candidates: Vec<ContextCandidate>,
     workflows: Vec<ContextWorkflow>,
     recurring: bool,
+    revocation_pending: bool,
     error: Option<String>,
     gap: Option<Gap>,
 }
 #[tauri::command]
-pub async fn get_context_history(app: AppHandle) -> Result<History, String> {
+pub async fn get_context_history(app: AppHandle, account_scope: String) -> Result<History, String> {
     let active = app.state::<ContextState>().gate.is_active();
-    with_runtime(&app, move |r| {
+    with_runtime_bound(&app, &account_scope, move |r| {
         Ok(History {
             own_os_login: r.personal_os_login,
             settings: r.settings.clone(),
@@ -325,69 +357,119 @@ pub async fn get_context_history(app: AppHandle) -> Result<History, String> {
             candidates: r.store.candidates(),
             workflows: r.store.workflows(),
             recurring: r.recurring.is_some(),
+            revocation_pending: r.revocation_pending,
             error: r.error.clone(),
             gap: r.last_gap,
         })
     })
     .await
 }
+async fn settings_operation<P, A, F>(
+    state: &ContextState,
+    prepare: P,
+    apply: A,
+) -> Result<(), String>
+where
+    P: std::future::Future<Output = Result<(), String>>,
+    A: FnOnce(u64) -> F,
+    F: std::future::Future<Output = Result<(), String>>,
+{
+    let generation = state.begin_action();
+    prepare.await?;
+    if state.action_generation.load(Ordering::SeqCst) != generation {
+        return Err("Session changed; explicitly resume again".into());
+    }
+    apply(generation).await
+}
+fn activate_settings(
+    state: &ContextState,
+    collector: &mut Collector,
+    action: u64,
+    session: u64,
+    active: bool,
+) -> Result<(), String> {
+    if state.action_generation.load(Ordering::SeqCst) != action {
+        return Err("Session changed; explicitly resume again".into());
+    }
+    collector.set_session_active(active);
+    if active
+        && (!state.gate.activate_explicitly(session)
+            || state.action_generation.load(Ordering::SeqCst) != action)
+    {
+        collector.set_session_active(false);
+        state.pause_for_preparation();
+        return Err("Session changed; explicitly resume again".into());
+    }
+    Ok(())
+}
 #[tauri::command]
 pub async fn set_context_settings(
     app: AppHandle,
     settings: ContextSettings,
     own_os_login: bool,
+    account_scope: String,
 ) -> Result<(), String> {
     let state = app.state::<ContextState>().inner().clone();
-    state.pause();
-    if !own_os_login && settings.enabled {
-        return Err("A shared OS login supports inventory only".into());
-    }
-    if settings.allowed_app_ids.len() > 30
-        || settings.allowed_app_ids.iter().any(|id| {
-            !matches!(
-                id.as_str(),
-                "com.apple.TextEdit" | "notepad.exe" | "web:google-sheets"
-            )
-        })
-        || settings
-            .allowed_domains
-            .iter()
-            .any(|d| d != "docs.google.com")
-    {
-        return Err("Unsupported context selection".into());
-    }
-    revoke_recurring(&app).await?;
-    let permitted = {
-        let c = app.state::<AgentState>().config.lock().await.clone();
-        !c.kill_switch && !c.update_required()
+    let selection = settings.clone();
+    let prepare = async {
+        let settings = &selection;
+        if !own_os_login && settings.enabled {
+            return Err("A shared OS login supports inventory only".into());
+        }
+        if settings.allowed_app_ids.len() > 30
+            || settings.allowed_app_ids.iter().any(|id| {
+                !matches!(
+                    id.as_str(),
+                    "com.apple.TextEdit" | "notepad.exe" | "web:google-sheets"
+                )
+            })
+            || settings
+                .allowed_domains
+                .iter()
+                .any(|d| d != "docs.google.com")
+        {
+            return Err("Unsupported context selection".into());
+        }
+        revoke_recurring(&app, Some(&account_scope)).await
     };
-    with_runtime(&app, move |r| {
-        let epoch = state.epoch.load(Ordering::SeqCst);
-        let session_generation = state.gate.generation();
-        r.invalidate();
-        r.settings = settings;
-        r.personal_os_login = own_os_login;
-        let active = r.settings.enabled
-            && !r.settings.paused
-            && own_os_login
-            && state.session_ready.load(Ordering::SeqCst)
-            && permitted
-            && session_available();
-        if r.settings.enabled && !active {
-            r.settings.paused = true;
+    settings_operation(&state, prepare, |action| {
+        let state = state.clone();
+        let app = app.clone();
+        let account_scope = account_scope.clone();
+        async move {
+            let permitted = {
+                let c = app.state::<AgentState>().config.lock().await.clone();
+                !c.kill_switch && !c.update_required()
+            };
+            let state = state.clone();
+            with_runtime_bound(&app, &account_scope, move |r| {
+                let session = state.gate.generation();
+                if state.action_generation.load(Ordering::SeqCst) != action {
+                    return Err("Session changed; explicitly resume again".into());
+                }
+                r.invalidate();
+                r.settings = settings;
+                r.personal_os_login = own_os_login;
+                let active = r.settings.enabled
+                    && !r.settings.paused
+                    && own_os_login
+                    && state.session_ready.load(Ordering::SeqCst)
+                    && permitted
+                    && session_available();
+                if r.settings.enabled && !active {
+                    r.settings.paused = true;
+                }
+                r.check_key()?;
+                if let Err(error) =
+                    activate_settings(&state, &mut r.collector, action, session, active)
+                {
+                    r.settings.paused = true;
+                    return Err(error);
+                }
+                Ok(())
+            })
+            .await
         }
-        r.check_key()?;
-        if state.epoch.load(Ordering::SeqCst) != epoch {
-            return Err("Session changed; explicitly resume again".into());
-        }
-        r.collector.set_session_active(active);
-        // The collector's gate and the immediate runtime gate are independent vetoes.
-        if active && !state.gate.activate_explicitly(session_generation) {
-            r.collector.set_session_active(false);
-            r.settings.paused = true;
-            return Err("Session changed; explicitly resume again".into());
-        }
-        Ok(())
     })
     .await
 }
@@ -396,9 +478,16 @@ pub async fn delete_context_history(
     app: AppHandle,
     ids: Option<Vec<Uuid>>,
     workflow_id: Option<Uuid>,
+    account_scope: String,
 ) -> Result<(), String> {
-    app.state::<ContextState>().pause();
-    let remote = revoke_recurring(&app).await;
+    let state = app.state::<ContextState>().inner().clone();
+    let operation = state.begin_action();
+    let remote = revoke_recurring(&app, Some(&account_scope)).await;
+    if identity(&app).await.scope != account_scope
+        || state.action_generation.load(Ordering::SeqCst) != operation
+    {
+        return Err("Account or session changed; retry local deletion".into());
+    }
     if ids.is_none() && workflow_id.is_none() {
         let state = app.state::<ContextState>().inner().clone();
         let dir = app
@@ -408,13 +497,20 @@ pub async fn delete_context_history(
             .join("context");
         tauri::async_runtime::spawn_blocking(move || {
             let mut slot = state.runtime.lock().map_err(|_| "Context unavailable")?;
+            if state.action_generation.load(Ordering::SeqCst) != operation
+                || slot
+                    .as_ref()
+                    .is_some_and(|r| r.identity.scope != account_scope)
+            {
+                return Err("Account changed".into());
+            }
             *slot = None;
             erase_context_files(&dir)
         })
         .await
         .map_err(|_| "Context worker unavailable")??;
     } else {
-        with_runtime(&app, move |r| {
+        with_runtime_bound(&app, &account_scope, move |r| {
             r.invalidate();
             r.settings.paused = true;
             if let Some(id) = workflow_id {
@@ -428,18 +524,32 @@ pub async fn delete_context_history(
     }
     remote.map_err(|_| "Local context deleted; remote revocation remains unconfirmed".into())
 }
+fn save_workflow_scoped(
+    runtime: &mut Runtime,
+    scope: &str,
+    workflow: ContextWorkflow,
+) -> Result<(), String> {
+    if runtime.identity.scope != scope {
+        return Err("Account changed; reopen the workflow in the current account".into());
+    }
+    runtime.invalidate();
+    runtime
+        .store
+        .save_workflow(workflow)
+        .map_err(|e| e.to_string())
+}
 #[tauri::command]
 pub async fn save_context_workflow(
     app: AppHandle,
     workflow: ContextWorkflow,
+    account_scope: String,
 ) -> Result<(), String> {
     app.state::<ContextState>()
         .epoch
         .fetch_add(1, Ordering::SeqCst);
-    let remote = revoke_recurring(&app).await;
+    let remote = revoke_recurring(&app, Some(&account_scope)).await;
     with_runtime(&app, move |r| {
-        r.invalidate();
-        r.store.save_workflow(workflow).map_err(|e| e.to_string())
+        save_workflow_scoped(r, &account_scope, workflow)
     })
     .await?;
     remote.map_err(|_| "Description saved locally; remote revocation remains unconfirmed".into())
@@ -552,6 +662,7 @@ pub async fn prepare_context_package(
     app: AppHandle,
     selection: Selection,
     own_os_login: bool,
+    account_scope: String,
 ) -> Result<Preview, String> {
     app.state::<ContextState>()
         .epoch
@@ -577,7 +688,7 @@ pub async fn prepare_context_package(
     } else {
         None
     };
-    with_runtime(&app, move |r| {
+    with_runtime_bound(&app, &account_scope, move |r| {
         r.invalidate();
         r.personal_os_login = own_os_login;
         let p = package(r, &selection, scan)?;
@@ -606,8 +717,10 @@ async fn request<T: DeserializeOwned>(
             return Err("Consent or account changed; delivery unconfirmed".into());
         }
         let config = app.state::<AgentState>().config.lock().await.clone();
-        if !matches!(route, ContextRoute::Revoke | ContextRoute::DeletePackage(_))
-            && (config.kill_switch || config.update_required())
+        if !matches!(
+            route,
+            ContextRoute::Revoke | ContextRoute::RevokeSummaries | ContextRoute::DeletePackage(_)
+        ) && (config.kill_switch || config.update_required())
         {
             return Err("Workspace policy paused context sharing".into());
         }
@@ -640,10 +753,13 @@ async fn request<T: DeserializeOwned>(
                 .is_some_and(|r| {
                     !r.revocation_pending
                         && r.recurring.as_ref().is_some_and(|g| {
-                            body.as_ref()
-                                .and_then(|b| b.get("grantId"))
-                                .and_then(|v| v.as_str())
-                                == Some(g.grant_id.to_string().as_str())
+                            g.selection_generation
+                                == state.sharing_generation.load(Ordering::SeqCst)
+                                && body
+                                    .as_ref()
+                                    .and_then(|b| b.get("grantId"))
+                                    .and_then(|v| v.as_str())
+                                    == Some(g.grant_id.to_string().as_str())
                         })
                 });
             if !allowed {
@@ -804,20 +920,31 @@ struct Revoked {
     revoked: bool,
 }
 #[tauri::command]
-pub async fn delete_shared_context(app: AppHandle, package_id: Option<Uuid>) -> Result<(), String> {
+pub async fn delete_shared_context(
+    app: AppHandle,
+    package_id: Option<Uuid>,
+    account_scope: String,
+) -> Result<(), String> {
+    app.state::<ContextState>().pause();
+    delete_shared_context_inner(app, package_id, account_scope).await
+}
+async fn delete_shared_context_inner(
+    app: AppHandle,
+    package_id: Option<Uuid>,
+    account_scope: String,
+) -> Result<(), String> {
     let state = app.state::<ContextState>().inner().clone();
-    state.pause();
-    with_runtime(&app, move |r| {
+    state.pause_for_preparation();
+    let id = with_runtime_bound(&app, &account_scope, move |r| {
         r.invalidate();
         r.settings.paused = true;
         if package_id.is_none() {
             r.recurring = None;
             r.revocation_pending = true;
         }
-        Ok(())
+        Ok(r.identity.clone())
     })
     .await?;
-    let id = identity(&app).await;
     let epoch = state.epoch.load(Ordering::SeqCst);
     if let Some(package_id) = package_id {
         let result: Deleted = request(
@@ -836,27 +963,53 @@ pub async fn delete_shared_context(app: AppHandle, package_id: Option<Uuid>) -> 
         if !result.revoked {
             return Err("Remote revocation unconfirmed".into());
         }
-        with_runtime(&app, |r| {
+        with_runtime_bound(&app, &account_scope, move |r| {
+            if r.identity != id {
+                return Err("Account changed".into());
+            }
             r.recurring = None;
             r.revocation_pending = false;
+            r.error = None;
             Ok(())
         })
         .await?;
     }
     Ok(())
 }
-async fn revoke_recurring(app: &AppHandle) -> Result<(), String> {
-    let exists = app
-        .state::<ContextState>()
-        .runtime
-        .lock()
-        .map_err(|_| "Context unavailable")?
-        .as_ref()
-        .is_some_and(|r| r.recurring.is_some() || r.revocation_pending);
-    if exists {
-        delete_shared_context(app.clone(), None).await?;
+async fn revoke_recurring(app: &AppHandle, expected_scope: Option<&str>) -> Result<(), String> {
+    let state = app.state::<ContextState>().inner().clone();
+    let scope = {
+        let slot = state.runtime.lock().map_err(|_| "Context unavailable")?;
+        if slot
+            .as_ref()
+            .is_some_and(|r| expected_scope.is_some_and(|s| s != r.identity.scope))
+        {
+            return Err("Account changed".into());
+        }
+        slot.as_ref()
+            .filter(|r| r.recurring.is_some() || r.revocation_pending)
+            .map(|r| r.identity.scope.clone())
+    };
+    if let Some(scope) = scope {
+        revoke_selection(app, &state, &scope).await?;
     }
     Ok(())
+}
+async fn revoke_selection(
+    app: &AppHandle,
+    state: &ContextState,
+    scope: &str,
+) -> Result<(), String> {
+    invalidate_selection_operation(state, scope, |identity| async move {
+        let epoch = state.epoch.load(Ordering::SeqCst);
+        let result: Revoked =
+            request(app, &identity, epoch, ContextRoute::RevokeSummaries, None).await?;
+        if !result.revoked {
+            return Err("Remote revocation unconfirmed".into());
+        }
+        Ok(())
+    })
+    .await
 }
 // Matches Python json.dumps(sort_keys=True, ensure_ascii=False, separators=(",",":"))
 // for this closed schema's bounded optional f64 metrics. All other numbers are integers.
@@ -910,19 +1063,21 @@ pub async fn enable_context_summary(
     app: AppHandle,
     token: String,
     own_os_login: bool,
+    account_scope: String,
 ) -> Result<(), String> {
     if !own_os_login {
         return Err("Shared OS logins support inventory only".into());
     }
     let state = app.state::<ContextState>().inner().clone();
+    let selection_generation = state.sharing_generation.load(Ordering::SeqCst);
     let _lock = state
         .send_lock
         .try_lock()
         .map_err(|_| "A context request is already running")?;
-    revoke_recurring(&app).await?;
+    revoke_recurring(&app, Some(&account_scope)).await?;
     let id = identity(&app).await;
     let scope = id.scope.clone();
-    let preview = with_runtime(&app, move |r| {
+    let preview = with_runtime_bound(&app, &account_scope, move |r| {
         let p = r
             .preview
             .as_ref()
@@ -959,11 +1114,16 @@ pub async fn enable_context_summary(
     {
         return Err("Invalid summary grant".into());
     }
-    with_runtime(&app, move |r| {
-        if r.identity != id || !r.authority.permits(&preview, &id.scope) {
+    let approval_state = state.clone();
+    with_runtime_bound(&app, &account_scope, move |r| {
+        if approval_state.sharing_generation.load(Ordering::SeqCst) != selection_generation
+            || r.identity != id
+            || !r.authority.permits(&preview, &id.scope)
+        {
             return Err("Selection changed; revoke shared context".into());
         }
         r.recurring = Some(Recurring {
+            selection_generation,
             grant_id: grant.grant_id,
             selection_sha256: grant.selection_sha256,
             day: None,
@@ -1156,16 +1316,10 @@ pub fn start(app: AppHandle) {
             let Ok(_lock) = state.send_lock.try_lock() else {
                 continue;
             };
-            let recurring = state
-                .runtime
-                .lock()
-                .ok()
-                .and_then(|slot| slot.as_ref().and_then(|r| r.recurring.clone()));
-            let Some(recurring) = recurring else { continue };
             let day = Utc::now().date_naive();
-            if recurring.day == Some(day) {
+            let Some(recurring) = next_summary(&state, day) else {
                 continue;
-            }
+            };
             let epoch = state.epoch.load(Ordering::SeqCst);
             // Coverage of the frozen summary selection is conservative; no fresh apps/episodes enter it.
             let result:Result<ContextReceipt,String>=request(&app,&recurring.identity,epoch,ContextRoute::Summaries,Some(serde_json::json!({"grantId":recurring.grant_id,"day":day,"coverage":{"observedDays":0,"gaps":["insufficient_evidence"]}}))).await;
@@ -1193,6 +1347,188 @@ pub fn start(app: AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn synthetic_runtime(path: &std::path::Path, identity: Identity) -> Runtime {
+        Runtime {
+            identity,
+            store: ContextStore::open(path, [17; 32]).unwrap(),
+            settings: ContextSettings::default(),
+            collector: Collector::default(),
+            authority: Authority::default(),
+            preview: None,
+            recurring: None,
+            last_gap: None,
+            last_browser: None,
+            error: None,
+            personal_os_login: true,
+            key_fingerprint: hash(&[17; 32]),
+            revocation_pending: false,
+        }
+    }
+    #[tokio::test]
+    async fn delayed_old_account_save_cannot_copy_a_workflow_into_the_new_store() {
+        let dir = std::env::temp_dir().join(format!("context-account-save-{}", Uuid::new_v4()));
+        let state = ContextState::default();
+        let old = Identity::from_config(&AgentConfig::default());
+        let scope = old.scope.clone();
+        *state.runtime.lock().unwrap() = Some(synthetic_runtime(&dir.join("a.bin"), old));
+        let workflow = serde_json::from_str::<ContextPackage>(include_str!(
+            "../fixtures/context-package-v1.json"
+        ))
+        .unwrap()
+        .workflows
+        .remove(0);
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (release, waiting) = tokio::sync::oneshot::channel();
+        let saving = async {
+            started.send(()).unwrap();
+            waiting.await.unwrap();
+            let mut slot = state.runtime.lock().unwrap();
+            save_workflow_scoped(slot.as_mut().unwrap(), &scope, workflow)
+        };
+        let switch = async {
+            ready.await.unwrap();
+            let mut other = Identity::from_config(&AgentConfig::default());
+            other.scope = "other-account".into();
+            *state.runtime.lock().unwrap() = Some(synthetic_runtime(&dir.join("b.bin"), other));
+            release.send(()).unwrap();
+        };
+        let (result, ()) = tokio::join!(saving, switch);
+        assert!(
+            result.is_err(),
+            "an old draft must not be adopted by the current store"
+        );
+        assert!(state
+            .runtime
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .store
+            .workflows()
+            .is_empty());
+        *state.runtime.lock().unwrap() = None;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[tokio::test]
+    async fn enable_command_cannot_resume_after_lock_during_preparation() {
+        let state = ContextState::default();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (release, waiting) = tokio::sync::oneshot::channel();
+        let available = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let command = settings_operation(
+            &state,
+            async {
+                started.send(()).unwrap();
+                waiting.await.unwrap();
+                Ok(())
+            },
+            |action| {
+                let state = state.clone();
+                let available = available.clone();
+                async move {
+                    // Same final production activation as set_context_settings. No native observation.
+                    let mut collector = Collector::default();
+                    activate_settings(
+                        &state,
+                        &mut collector,
+                        action,
+                        state.gate.generation(),
+                        available.load(Ordering::SeqCst),
+                    )
+                }
+            },
+        );
+        let lock_and_unlock = async {
+            ready.await.unwrap();
+            available.store(false, Ordering::SeqCst);
+            state.pause();
+            available.store(true, Ordering::SeqCst);
+            release.send(()).unwrap();
+        };
+        let (result, ()) = tokio::join!(command, lock_and_unlock);
+        assert!(
+            result.is_err(),
+            "the original user command must stay cancelled after unlock"
+        );
+        assert!(!state.gate.is_active());
+        settings_operation(
+            &state,
+            async {
+                state.pause_for_preparation();
+                Ok(())
+            },
+            |action| {
+                let state = &state;
+                async move {
+                    let mut collector = Collector::default();
+                    activate_settings(state, &mut collector, action, state.gate.generation(), true)
+                }
+            },
+        )
+        .await
+        .unwrap();
+        assert!(state.gate.is_active());
+        state.pause();
+    }
+    #[tokio::test]
+    async fn selection_change_stops_the_next_daily_request_before_offline_revocation() {
+        let dir = std::env::temp_dir().join(format!("context-selection-test-{}", Uuid::new_v4()));
+        let identity = Identity::from_config(&AgentConfig::default());
+        let scope = identity.scope.clone();
+        let store = ContextStore::open(&dir.join("synthetic.bin"), [17; 32]).unwrap();
+        let runtime = Runtime {
+            identity: identity.clone(),
+            store,
+            settings: ContextSettings::default(),
+            collector: Collector::default(),
+            authority: Authority::default(),
+            preview: None,
+            recurring: Some(Recurring {
+                selection_generation: 0,
+                grant_id: Uuid::new_v4(),
+                selection_sha256: "synthetic".into(),
+                day: None,
+                identity,
+            }),
+            last_gap: None,
+            last_browser: None,
+            error: None,
+            personal_os_login: true,
+            key_fingerprint: hash(&[17; 32]),
+            revocation_pending: false,
+        };
+        let state = ContextState::default();
+        *state.runtime.lock().unwrap() = Some(runtime);
+        let today = Utc::now().date_naive();
+        assert!(next_summary(&state, today).is_some());
+        let generation = state.sharing_generation.load(Ordering::SeqCst);
+        assert!(
+            invalidate_selection_operation(&state, "another-account", |_| async {
+                panic!("must not revoke another account")
+            })
+            .await
+            .is_err()
+        );
+        assert_eq!(state.sharing_generation.load(Ordering::SeqCst), generation);
+        assert!(next_summary(&state, today).is_some());
+        let result = invalidate_selection_operation(&state, &scope, |_| async {
+            assert!(
+                next_summary(&state, today).is_none(),
+                "local scheduling must stop before any revoke wait"
+            );
+            Err("synthetic network unavailable".into())
+        })
+        .await;
+        assert!(result.is_err());
+        assert!(next_summary(&state, today).is_none());
+        let guard = state.runtime.lock().unwrap();
+        let r = guard.as_ref().unwrap();
+        assert!(r.revocation_pending);
+        assert!(r.error.is_some());
+        drop(guard);
+        *state.runtime.lock().unwrap() = None;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
     #[test]
     fn deleted_workflow_and_expired_sources_invalidate_a_real_store_preview() {
         let dir = std::env::temp_dir().join(format!("context-sources-test-{}", Uuid::new_v4()));
@@ -1358,12 +1694,78 @@ mod tests {
     }
 }
 
+fn next_summary(state: &ContextState, day: chrono::NaiveDate) -> Option<Recurring> {
+    let generation = state.sharing_generation.load(Ordering::SeqCst);
+    state
+        .runtime
+        .lock()
+        .ok()
+        .and_then(|slot| {
+            slot.as_ref()
+                .filter(|r| !r.revocation_pending)
+                .and_then(|r| r.recurring.clone())
+        })
+        .filter(|r| r.day != Some(day) && r.selection_generation == generation)
+}
+async fn invalidate_selection_operation<F, P>(
+    state: &ContextState,
+    scope: &str,
+    revoke: F,
+) -> Result<(), String>
+where
+    F: FnOnce(Identity) -> P,
+    P: std::future::Future<Output = Result<(), String>>,
+{
+    let (identity, generation) = {
+        let mut slot = state.runtime.lock().map_err(|_| "Context unavailable")?;
+        if slot.as_ref().is_some_and(|r| r.identity.scope != scope) {
+            return Err("Account changed".into());
+        }
+        let generation = state
+            .sharing_generation
+            .fetch_add(1, Ordering::SeqCst)
+            .wrapping_add(1);
+        state.epoch.fetch_add(1, Ordering::SeqCst);
+        let identity = if let Some(r) = slot.as_mut() {
+            r.invalidate();
+            r.revocation_pending |= r.recurring.take().is_some();
+            if r.revocation_pending {
+                r.error = Some("Daily sharing stopped locally; remote revocation pending".into());
+                Some(r.identity.clone())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        (identity, generation)
+    };
+    if let Some(identity) = identity {
+        revoke(identity.clone()).await?;
+        let mut slot = state.runtime.lock().map_err(|_| "Context unavailable")?;
+        if let Some(r) = slot.as_mut().filter(|r| {
+            r.identity == identity && state.sharing_generation.load(Ordering::SeqCst) == generation
+        }) {
+            r.revocation_pending = false;
+            r.error = None;
+        }
+    }
+    Ok(())
+}
 #[tauri::command]
-pub async fn cancel_context_preview(app: AppHandle) {
+pub async fn invalidate_context_selection(
+    app: AppHandle,
+    account_scope: String,
+) -> Result<(), String> {
+    let state = app.state::<ContextState>().inner().clone();
+    revoke_selection(&app, &state, &account_scope).await
+}
+#[tauri::command]
+pub async fn cancel_context_preview(app: AppHandle, account_scope: String) {
     let state = app.state::<ContextState>();
-    state.epoch.fetch_add(1, Ordering::SeqCst);
     if let Ok(mut slot) = state.runtime.lock() {
-        if let Some(r) = slot.as_mut() {
+        if let Some(r) = slot.as_mut().filter(|r| r.identity.scope == account_scope) {
+            state.epoch.fetch_add(1, Ordering::SeqCst);
             r.invalidate();
         }
     };

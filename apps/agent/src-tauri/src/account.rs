@@ -97,6 +97,7 @@ pub struct PendingSignIn {
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountView {
+    pub account_scope: String,
     pub signed_in: bool,
     pub user_name: Option<String>,
     pub user_email: Option<String>,
@@ -200,7 +201,9 @@ async fn delete_secret(device_id: String) {
 
 pub async fn account_view(app: &AppHandle) -> AccountView {
     let state: State<'_, AgentState> = app.state();
-    let account = state.config.lock().await.account.clone();
+    let config = state.config.lock().await.clone();
+    let account_scope = crate::context_history::account_scope(&config);
+    let account = config.account;
     let signing_in = state
         .pending_sign_in
         .lock()
@@ -210,6 +213,7 @@ pub async fn account_view(app: &AppHandle) -> AccountView {
     let error = state.account_error.lock().await.clone();
     match account {
         Some(account) => AccountView {
+            account_scope,
             signed_in: true,
             user_name: account.user_name,
             user_email: account.user_email,
@@ -218,6 +222,7 @@ pub async fn account_view(app: &AppHandle) -> AccountView {
             error,
         },
         None => AccountView {
+            account_scope,
             signing_in,
             error,
             ..AccountView::default()
@@ -521,6 +526,7 @@ pub async fn forget_account(app: &AppHandle) -> Result<(), String> {
     if let Some(previous) = previous {
         delete_secret(previous.device_id).await;
     }
+    let _ = app.emit(ACCOUNT_EVENT, account_view(app).await);
     Ok(())
 }
 
