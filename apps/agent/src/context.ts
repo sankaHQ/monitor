@@ -8,6 +8,7 @@ export type Screen =
   | "software"
   | "saas"
   | "reports"
+  | "history"
   | "workspace"
   | "privacy"
   | "settings"

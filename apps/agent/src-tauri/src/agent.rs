@@ -85,6 +85,7 @@ const PERSON_VIEWS_TIMEOUT: Duration = Duration::from_secs(20);
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AccountConfig {
+    pub workspace_id: Option<String>,
     pub device_id: String,
     pub user_name: Option<String>,
     pub user_email: Option<String>,
@@ -756,6 +757,9 @@ async fn checkin_once(app: &AppHandle, with_posture: bool) -> Result<CheckinData
                     config.min_agent_version.as_deref() != Some(data.min_agent_version.as_str());
                 config.last_checkin_at = Some(Utc::now());
                 config.checkin_interval_seconds = Some(data.checkin_interval_seconds);
+                if data.kill_switch || version_below(AGENT_VERSION, Some(&data.min_agent_version)) {
+                    app.state::<crate::context_history::ContextState>().pause();
+                }
                 config.kill_switch = data.kill_switch;
                 config.min_agent_version = Some(data.min_agent_version.clone());
                 // The workspace's answer applies even if it cannot be saved.

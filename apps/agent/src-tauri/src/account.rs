@@ -346,7 +346,9 @@ async fn save_account(app: &AppHandle, signed_in: &DesktopSignInData) -> Result<
     let saved = {
         let mut config = state.config.lock().await;
         let mut next = config.clone();
+        app.state::<crate::context_history::ContextState>().pause();
         let previous = next.account.replace(AccountConfig {
+            workspace_id: Some(signed_in.workspace.id.clone()),
             device_id: signed_in.device_id.clone(),
             user_name: signed_in.user.name.clone(),
             user_email: signed_in.user.email.clone(),
@@ -505,6 +507,7 @@ pub async fn forget_token(app: &AppHandle) {
 
 /// Forgets the account here: the keychain secret, the names and any token.
 pub async fn forget_account(app: &AppHandle) -> Result<(), String> {
+    app.state::<crate::context_history::ContextState>().pause();
     let state: State<'_, AgentState> = app.state();
     let previous = {
         let mut config = state.config.lock().await;
@@ -524,6 +527,7 @@ pub async fn forget_account(app: &AppHandle) -> Result<(), String> {
 /// Sign out: revokes the credential in Sanka when it can, then forgets it.
 #[tauri::command]
 pub async fn sign_out(app: AppHandle) -> Result<AccountView, String> {
+    app.state::<crate::context_history::ContextState>().pause();
     // Without the network the secret is still deleted here, so it cannot send.
     let _ = tokio::time::timeout(SIGN_OUT_TIMEOUT, revoke(&app)).await;
     forget_account(&app).await?;

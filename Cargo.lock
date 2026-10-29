@@ -3622,9 +3622,11 @@ name = "sanka-monitor-agent"
 version = "0.4.3"
 dependencies = [
  "base64 0.22.1",
+ "block2",
  "chrono",
  "getrandom 0.4.3",
  "keyring",
+ "monitor-context",
  "monitor-core",
  "monitor-findings",
  "monitor-inventory",
@@ -3635,6 +3637,7 @@ dependencies = [
  "monitor-sync",
  "monitor-usage",
  "objc2-app-kit",
+ "objc2-foundation",
  "serde",
  "serde_json",
  "sha2",

@@ -68,3 +68,20 @@ described in [SECURITY.md](SECURITY.md).
 Sanka Monitor is licensed under the [Apache License 2.0](LICENSE). Unless you say
 otherwise, any contribution you submit for inclusion is licensed under the same
 terms, as section 5 of the license describes.
+
+## Work History and browser bridge changes
+
+Keep `monitor-context` local-only and preserve the existing UsageEvent and report
+contracts. Add owning behavioral checks for privacy/consent, account/source
+invalidation, exact-byte transport, receipt validation and closed native frames.
+The synthetic cross-language package and Python-canonical summary hash are in
+`apps/agent/src-tauri/fixtures/`; they contain no real activity or account data.
+Native frame/relay checks live in `browser_context.rs`; desktop consent checks in
+`context_history.rs`; HTTP wire checks in `monitor-sync/src/context_tests.rs`.
+
+Do not grant TCC/UIA permissions, register a native host in a real browser profile,
+or collect real work history as part of automated verification. Use isolated
+browser profiles and synthetic provider pages. A macOS build and a Windows API
+compile harness do not qualify native-device behavior. Keep actual Chrome, Edge,
+Windows linking, lock/sleep behavior and resource-budget checks explicit in the
+change report. Public extension-store identity and publishing are separate reviews.

@@ -1,0 +1,1449 @@
+//! Explicit local context consent, immutable previews and account-bound cloud delivery.
+use crate::{
+    account,
+    agent::{AgentConfig, AgentState, AGENT_VERSION},
+};
+use base64::{engine::general_purpose::STANDARD, Engine};
+use chrono::{DateTime, Utc};
+use monitor_context::{
+    Action, Audience, Collector, ContextApp, ContextCandidate, ContextCoverage, ContextEvent,
+    ContextPackage, ContextSettings, ContextStore, ContextWorkflow, Gap, ObjectCategory,
+    Provenance, ReportEvidence, SessionGate, MAX_PACKAGE_BYTES,
+};
+use monitor_sync::{AgentClient, ContextReceipt, ContextRoute};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
+    time::{Duration, Instant},
+};
+use tauri::{AppHandle, Manager};
+use uuid::Uuid;
+#[path = "context_session.rs"]
+mod session;
+use session::{install_session_notifications, session_available};
+
+pub(crate) fn hash(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+#[derive(Default)]
+struct Authority {
+    generation: u64,
+}
+impl Authority {
+    fn invalidate(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+    }
+    fn freeze(&self, identity: &str, json: &str) -> Preview {
+        Preview {
+            token: Uuid::new_v4().to_string(),
+            package_json: json.into(),
+            sha256: hash(json.as_bytes()),
+            identity: identity.into(),
+            generation: self.generation,
+        }
+    }
+    fn permits(&self, preview: &Preview, identity: &str) -> bool {
+        preview.identity == identity
+            && preview.generation == self.generation
+            && preview.sha256 == hash(preview.package_json.as_bytes())
+    }
+}
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Preview {
+    pub token: String,
+    pub package_json: String,
+    pub sha256: String,
+    #[serde(skip)]
+    identity: String,
+    #[serde(skip)]
+    generation: u64,
+}
+impl Preview {
+    fn receipt_matches(&self, sha: &str) -> bool {
+        self.sha256 == sha
+    }
+}
+#[derive(Clone, PartialEq, Eq)]
+struct Identity {
+    scope: String,
+    workspace: Option<Uuid>,
+    device: Option<Uuid>,
+    api: String,
+    origin: String,
+    code: Option<String>,
+}
+impl Identity {
+    fn from_config(config: &AgentConfig) -> Self {
+        let account = config.account.as_ref();
+        let api = config.api_base();
+        let origin = config.app_base();
+        let scope = hash(
+            format!(
+                "{}|{}|{}|{}",
+                api,
+                origin,
+                account.map(|a| a.device_id.as_str()).unwrap_or("local"),
+                account
+                    .and_then(|a| a.workspace_id.as_deref())
+                    .unwrap_or("local")
+            )
+            .as_bytes(),
+        );
+        Self {
+            scope,
+            workspace: account
+                .and_then(|a| a.workspace_id.as_deref())
+                .and_then(|v| Uuid::parse_str(v).ok()),
+            device: account.and_then(|a| Uuid::parse_str(&a.device_id).ok()),
+            api,
+            origin,
+            code: account.and_then(|a| a.workspace_code.clone()),
+        }
+    }
+}
+#[derive(Clone)]
+struct Recurring {
+    grant_id: Uuid,
+    selection_sha256: String,
+    day: Option<chrono::NaiveDate>,
+    identity: Identity,
+}
+struct Runtime {
+    identity: Identity,
+    store: ContextStore,
+    settings: ContextSettings,
+    collector: Collector,
+    authority: Authority,
+    preview: Option<Preview>,
+    recurring: Option<Recurring>,
+    last_gap: Option<Gap>,
+    last_browser: Option<Instant>,
+    error: Option<String>,
+    personal_os_login: bool,
+    key_fingerprint: String,
+    revocation_pending: bool,
+}
+impl Runtime {
+    fn invalidate(&mut self) {
+        self.authority.invalidate();
+        self.preview = None;
+    }
+    fn check_key(&self) -> Result<(), String> {
+        if hash(&key(&self.identity.scope, false)?) != self.key_fingerprint {
+            return Err("Context key changed; collection disabled".into());
+        }
+        Ok(())
+    }
+    fn prune(&mut self) -> Result<(), String> {
+        if self.store.prune(Utc::now()).map_err(|e| e.to_string())? > 0 {
+            self.invalidate();
+        }
+        Ok(())
+    }
+}
+#[derive(Clone, Default)]
+pub struct RuntimeGate(Arc<AtomicU64>);
+impl RuntimeGate {
+    fn pause(&self) {
+        let mut previous = self.generation();
+        loop {
+            match self.0.compare_exchange(
+                previous,
+                previous.wrapping_add(2) & !1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return,
+                Err(value) => previous = value,
+            }
+        }
+    }
+    pub fn is_active(&self) -> bool {
+        self.0.load(Ordering::SeqCst) & 1 == 1
+    }
+    fn generation(&self) -> u64 {
+        self.0.load(Ordering::SeqCst)
+    }
+    fn activate_explicitly(&self, generation: u64) -> bool {
+        self.0
+            .compare_exchange(
+                generation,
+                generation | 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            )
+            .is_ok()
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct ContextState {
+    runtime: Arc<Mutex<Option<Runtime>>>,
+    pub gate: RuntimeGate,
+    session_ready: Arc<std::sync::atomic::AtomicBool>,
+    native_gate: Arc<Mutex<Option<SessionGate>>>,
+    epoch: Arc<AtomicU64>,
+    // Shared between UI operations and sends; mutation never waits for network I/O.
+    send_lock: Arc<tokio::sync::Mutex<()>>,
+}
+impl ContextState {
+    pub fn pause(&self) {
+        self.gate.pause();
+        if let Ok(gate) = self.native_gate.lock() {
+            if let Some(gate) = gate.as_ref() {
+                gate.pause();
+            }
+        }
+        self.epoch.fetch_add(1, Ordering::SeqCst);
+    }
+}
+fn key(scope: &str, create: bool) -> Result<[u8; 32], String> {
+    let entry = keyring::Entry::new("com.sanka.monitor.context", scope)
+        .map_err(|_| "Secure storage unavailable")?;
+    match entry.get_password() {
+        Ok(value) => STANDARD
+            .decode(value)
+            .ok()
+            .and_then(|v| v.try_into().ok())
+            .ok_or("Invalid context key".into()),
+        Err(keyring::Error::NoEntry) if create => {
+            let mut bytes = [0; 32];
+            getrandom::fill(&mut bytes).map_err(|_| "Secure random unavailable")?;
+            entry
+                .set_password(&STANDARD.encode(bytes))
+                .map_err(|_| "Secure storage unavailable")?;
+            Ok(bytes)
+        }
+        _ => Err("Secure storage unavailable; work history remains paused".into()),
+    }
+}
+async fn with_runtime<T: Send + 'static>(
+    app: &AppHandle,
+    f: impl FnOnce(&mut Runtime) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let state = app.state::<ContextState>().inner().clone();
+    let (config, mut expected_epoch) = {
+        let agent = app.state::<AgentState>();
+        let config = agent.config.lock().await;
+        (config.clone(), state.epoch.load(Ordering::SeqCst))
+    };
+    let identity = Identity::from_config(&config);
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "App directory unavailable")?
+        .join("context");
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut slot = state.runtime.lock().map_err(|_| "Context unavailable")?;
+        if state.epoch.load(Ordering::SeqCst) != expected_epoch {
+            return Err("Context state changed; try again".into());
+        }
+        if slot.as_ref().is_none_or(|r| r.identity != identity) {
+            state.pause();
+            expected_epoch = expected_epoch.wrapping_add(1);
+            *slot = None;
+            std::fs::create_dir_all(&dir).map_err(|_| "Context directory unavailable")?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+                    .map_err(|_| "Context directory unavailable")?;
+            }
+            let path = dir.join(format!("{}.bin", identity.scope));
+            let secret = key(&identity.scope, !path.exists())?;
+            let store = ContextStore::open(&path, secret).map_err(|e| e.to_string())?;
+            if state.epoch.load(Ordering::SeqCst) != expected_epoch {
+                return Err("Account or consent changed".into());
+            }
+            let collector = Collector::default();
+            *state
+                .native_gate
+                .lock()
+                .map_err(|_| "Context gate unavailable")? = Some(collector.session_gate());
+            *slot = Some(Runtime {
+                identity,
+                store,
+                settings: ContextSettings::default(),
+                collector,
+                authority: Authority::default(),
+                preview: None,
+                recurring: None,
+                last_gap: None,
+                last_browser: None,
+                error: None,
+                personal_os_login: false,
+                key_fingerprint: hash(&secret),
+                revocation_pending: false,
+            });
+        }
+        let r = slot.as_mut().ok_or("Context unavailable")?;
+        if config.kill_switch || config.update_required() {
+            if state.gate.is_active() {
+                state.pause();
+            }
+            r.settings.paused = true;
+            r.invalidate();
+        }
+        let generation = r.authority.generation;
+        r.prune()?;
+        if r.authority.generation != generation {
+            state.epoch.fetch_add(1, Ordering::SeqCst);
+        }
+        f(r)
+    })
+    .await
+    .map_err(|_| "Context worker unavailable")?
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct History {
+    own_os_login: bool,
+    settings: ContextSettings,
+    active: bool,
+    events: Vec<ContextEvent>,
+    candidates: Vec<ContextCandidate>,
+    workflows: Vec<ContextWorkflow>,
+    recurring: bool,
+    error: Option<String>,
+    gap: Option<Gap>,
+}
+#[tauri::command]
+pub async fn get_context_history(app: AppHandle) -> Result<History, String> {
+    let active = app.state::<ContextState>().gate.is_active();
+    with_runtime(&app, move |r| {
+        Ok(History {
+            own_os_login: r.personal_os_login,
+            settings: r.settings.clone(),
+            active: active && r.settings.enabled && !r.settings.paused,
+            events: r.store.events(),
+            candidates: r.store.candidates(),
+            workflows: r.store.workflows(),
+            recurring: r.recurring.is_some(),
+            error: r.error.clone(),
+            gap: r.last_gap,
+        })
+    })
+    .await
+}
+#[tauri::command]
+pub async fn set_context_settings(
+    app: AppHandle,
+    settings: ContextSettings,
+    own_os_login: bool,
+) -> Result<(), String> {
+    let state = app.state::<ContextState>().inner().clone();
+    state.pause();
+    if !own_os_login && settings.enabled {
+        return Err("A shared OS login supports inventory only".into());
+    }
+    if settings.allowed_app_ids.len() > 30
+        || settings.allowed_app_ids.iter().any(|id| {
+            !matches!(
+                id.as_str(),
+                "com.apple.TextEdit" | "notepad.exe" | "web:google-sheets"
+            )
+        })
+        || settings
+            .allowed_domains
+            .iter()
+            .any(|d| d != "docs.google.com")
+    {
+        return Err("Unsupported context selection".into());
+    }
+    revoke_recurring(&app).await?;
+    let permitted = {
+        let c = app.state::<AgentState>().config.lock().await.clone();
+        !c.kill_switch && !c.update_required()
+    };
+    with_runtime(&app, move |r| {
+        let epoch = state.epoch.load(Ordering::SeqCst);
+        let session_generation = state.gate.generation();
+        r.invalidate();
+        r.settings = settings;
+        r.personal_os_login = own_os_login;
+        let active = r.settings.enabled
+            && !r.settings.paused
+            && own_os_login
+            && state.session_ready.load(Ordering::SeqCst)
+            && permitted
+            && session_available();
+        if r.settings.enabled && !active {
+            r.settings.paused = true;
+        }
+        r.check_key()?;
+        if state.epoch.load(Ordering::SeqCst) != epoch {
+            return Err("Session changed; explicitly resume again".into());
+        }
+        r.collector.set_session_active(active);
+        // The collector's gate and the immediate runtime gate are independent vetoes.
+        if active && !state.gate.activate_explicitly(session_generation) {
+            r.collector.set_session_active(false);
+            r.settings.paused = true;
+            return Err("Session changed; explicitly resume again".into());
+        }
+        Ok(())
+    })
+    .await
+}
+#[tauri::command]
+pub async fn delete_context_history(
+    app: AppHandle,
+    ids: Option<Vec<Uuid>>,
+    workflow_id: Option<Uuid>,
+) -> Result<(), String> {
+    app.state::<ContextState>().pause();
+    let remote = revoke_recurring(&app).await;
+    if ids.is_none() && workflow_id.is_none() {
+        let state = app.state::<ContextState>().inner().clone();
+        let dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|_| "App directory unavailable")?
+            .join("context");
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut slot = state.runtime.lock().map_err(|_| "Context unavailable")?;
+            *slot = None;
+            erase_context_files(&dir)
+        })
+        .await
+        .map_err(|_| "Context worker unavailable")??;
+    } else {
+        with_runtime(&app, move |r| {
+            r.invalidate();
+            r.settings.paused = true;
+            if let Some(id) = workflow_id {
+                r.store.delete_workflow(id)
+            } else {
+                r.store.delete(&ids.unwrap_or_default()).map(|_| ())
+            }
+            .map_err(|e| e.to_string())
+        })
+        .await?;
+    }
+    remote.map_err(|_| "Local context deleted; remote revocation remains unconfirmed".into())
+}
+#[tauri::command]
+pub async fn save_context_workflow(
+    app: AppHandle,
+    workflow: ContextWorkflow,
+) -> Result<(), String> {
+    app.state::<ContextState>()
+        .epoch
+        .fetch_add(1, Ordering::SeqCst);
+    let remote = revoke_recurring(&app).await;
+    with_runtime(&app, move |r| {
+        r.invalidate();
+        r.store.save_workflow(workflow).map_err(|e| e.to_string())
+    })
+    .await?;
+    remote.map_err(|_| "Description saved locally; remote revocation remains unconfirmed".into())
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Selection {
+    app_ids: Vec<String>,
+    episode_ids: Vec<Uuid>,
+    workflow_ids: Vec<Uuid>,
+    audience: Audience,
+    include_scan: bool,
+}
+fn package(
+    r: &Runtime,
+    selection: &Selection,
+    scan: Option<ReportEvidence>,
+) -> Result<ContextPackage, String> {
+    let now = Utc::now();
+    let mut episodes: Vec<_> = r
+        .store
+        .candidates()
+        .into_iter()
+        .flat_map(|c| c.episodes)
+        .filter(|e| selection.episode_ids.contains(&e.id))
+        .collect();
+    episodes.sort_by_key(|e| e.id);
+    episodes.dedup_by_key(|e| e.id);
+    if episodes.len() != selection.episode_ids.len() {
+        return Err("Episode evidence changed; review again".into());
+    }
+    let mut workflows: Vec<_> = r
+        .store
+        .workflows()
+        .into_iter()
+        .filter(|w| selection.workflow_ids.contains(&w.id))
+        .collect();
+    workflows.sort_by_key(|w| w.id);
+    if workflows.len() != selection.workflow_ids.len() {
+        return Err("Workflow selection changed".into());
+    }
+    for w in &mut workflows {
+        w.episode_ids
+            .retain(|id| selection.episode_ids.contains(id));
+    }
+    let mut apps = BTreeMap::<String, ContextApp>::new();
+    let events = r.store.events();
+    for id in &selection.app_ids {
+        let known_name = match id.as_str() {
+            "web:google-sheets" => "Google Sheets",
+            "com.apple.TextEdit" => "TextEdit",
+            "notepad.exe" => "Notepad",
+            _ => return Err("Unknown app selection".into()),
+        };
+        let days = events
+            .iter()
+            .filter(|e| e.app_id == *id)
+            .map(|e| e.at.date_naive())
+            .collect::<BTreeSet<_>>()
+            .len() as u8;
+        apps.insert(
+            id.clone(),
+            ContextApp {
+                app_id: id.clone(),
+                name: known_name.into(),
+                service_key: (id == "web:google-sheets").then(|| "google-workspace".into()),
+                observed_days: days,
+            },
+        );
+    }
+    let days = episodes.iter().map(|e| e.day).collect::<BTreeSet<_>>();
+    let from = days
+        .first()
+        .and_then(|d| d.and_hms_opt(0, 0, 0))
+        .map(|d| d.and_utc())
+        .unwrap_or(now);
+    let mut gaps: Vec<_> = events.iter().filter_map(|e| e.gap).collect();
+    gaps.sort_by_key(|g| format!("{g:?}"));
+    gaps.dedup();
+    if episodes.is_empty() && !gaps.contains(&Gap::InsufficientEvidence) {
+        gaps.push(Gap::InsufficientEvidence);
+    }
+    let package = ContextPackage {
+        schema_version: 1,
+        package_id: Uuid::new_v4(),
+        workspace_id: r
+            .identity
+            .workspace
+            .ok_or("Sign in again to bind a workspace")?,
+        account_device_id: r.identity.device.ok_or("Sign in first")?,
+        audience: selection.audience,
+        policy_version: 1,
+        captured_from: from,
+        captured_to: now,
+        consented_at: now,
+        coverage: ContextCoverage {
+            observed_days: days.len() as u8,
+            gaps,
+        },
+        apps: apps.into_values().collect(),
+        episodes,
+        workflows,
+        scan,
+    };
+    package.validate(now).map_err(|e| e.to_string())?;
+    Ok(package)
+}
+#[tauri::command]
+pub async fn prepare_context_package(
+    app: AppHandle,
+    selection: Selection,
+    own_os_login: bool,
+) -> Result<Preview, String> {
+    app.state::<ContextState>()
+        .epoch
+        .fetch_add(1, Ordering::SeqCst);
+    if !own_os_login {
+        return Err("Shared OS logins support inventory only".into());
+    }
+    let scan = if selection.include_scan {
+        let report = app
+            .state::<AgentState>()
+            .last_scan
+            .lock()
+            .await
+            .clone()
+            .ok_or("Run a scan first")?;
+        Some(
+            serde_json::from_value(
+                serde_json::to_value(monitor_report::evidence::review_evidence(&report, &[]))
+                    .map_err(|_| "Invalid scan")?,
+            )
+            .map_err(|_| "Unsupported scan evidence")?,
+        )
+    } else {
+        None
+    };
+    with_runtime(&app, move |r| {
+        r.invalidate();
+        r.personal_os_login = own_os_login;
+        let p = package(r, &selection, scan)?;
+        let preview = r.authority.freeze(
+            &r.identity.scope,
+            &p.to_json(Utc::now()).map_err(|e| e.to_string())?,
+        );
+        r.preview = Some(preview.clone());
+        Ok(preview)
+    })
+    .await
+}
+async fn identity(app: &AppHandle) -> Identity {
+    Identity::from_config(&app.state::<AgentState>().config.lock().await.clone())
+}
+async fn request<T: DeserializeOwned>(
+    app: &AppHandle,
+    id: &Identity,
+    epoch: u64,
+    route: ContextRoute,
+    body: Option<serde_json::Value>,
+) -> Result<T, String> {
+    let state = app.state::<ContextState>().inner().clone();
+    for attempt in 0..2 {
+        if state.epoch.load(Ordering::SeqCst) != epoch || identity(app).await != *id {
+            return Err("Consent or account changed; delivery unconfirmed".into());
+        }
+        let config = app.state::<AgentState>().config.lock().await.clone();
+        if !matches!(route, ContextRoute::Revoke | ContextRoute::DeletePackage(_))
+            && (config.kill_switch || config.update_required())
+        {
+            return Err("Workspace policy paused context sharing".into());
+        }
+        let token = account::access_token(app)
+            .await
+            .map_err(|_| "Sign in to share context")?;
+        if state.epoch.load(Ordering::SeqCst) != epoch || identity(app).await != *id {
+            return Err("Account changed".into());
+        }
+        if matches!(route, ContextRoute::Packages | ContextRoute::SummaryGrants) {
+            let scope = id.scope.clone();
+            with_runtime(app, move |r| {
+                let preview = r.preview.as_ref().ok_or("Preview was cancelled")?;
+                if r.revocation_pending
+                    || !r.personal_os_login
+                    || !r.authority.permits(preview, &scope)
+                {
+                    return Err("Consent changed; delivery unconfirmed".into());
+                }
+                sources_unchanged(r, preview)
+            })
+            .await?;
+        }
+        if matches!(route, ContextRoute::Summaries) {
+            let allowed = state
+                .runtime
+                .lock()
+                .map_err(|_| "Context unavailable")?
+                .as_ref()
+                .is_some_and(|r| {
+                    !r.revocation_pending
+                        && r.recurring.as_ref().is_some_and(|g| {
+                            body.as_ref()
+                                .and_then(|b| b.get("grantId"))
+                                .and_then(|v| v.as_str())
+                                == Some(g.grant_id.to_string().as_str())
+                        })
+                });
+            if !allowed {
+                return Err("Daily sharing was revoked".into());
+            }
+        }
+        if state.epoch.load(Ordering::SeqCst) != epoch {
+            return Err("Consent changed; delivery unconfirmed".into());
+        }
+        let client = AgentClient::new(&id.api, AGENT_VERSION).map_err(|_| "Cloud unavailable")?;
+        let future = client.context_request::<T>(&token, route, body.as_ref());
+        tokio::pin!(future);
+        let response = loop {
+            tokio::select! {result=&mut future=>break result,
+                _=tokio::time::sleep(Duration::from_millis(100))=>{
+                    if state.epoch.load(Ordering::SeqCst)!=epoch || identity(app).await!=*id {return Err("Consent changed; delivery unconfirmed. Delete shared context to confirm removal.".into());}
+                }
+            }
+        };
+        if state.epoch.load(Ordering::SeqCst) != epoch || identity(app).await != *id {
+            return Err("Consent changed; delivery unconfirmed".into());
+        }
+        match response {
+            Ok(value) => return Ok(value),
+            Err(e) if e.token_rejected() && attempt == 0 => account::forget_token(app).await,
+            Err(e) if e.signed_out() => {
+                state.pause();
+                let _ = account::forget_account(app).await;
+                return Err("Account access revoked; delivery unconfirmed".into());
+            }
+            Err(_) => {
+                return Err(
+                    "Delivery unconfirmed or server unsupported; data remains available locally"
+                        .into(),
+                )
+            }
+        }
+    }
+    Err("Cloud unavailable".into())
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Capabilities {
+    schema_versions: Vec<u8>,
+    policy_version: u8,
+    max_bytes: usize,
+}
+async fn capability(app: &AppHandle, id: &Identity, epoch: u64) -> Result<(), String> {
+    let c: Capabilities = request(app, id, epoch, ContextRoute::Capabilities, None).await?;
+    if !c.schema_versions.contains(&1) || c.policy_version != 1 || c.max_bytes < MAX_PACKAGE_BYTES {
+        return Err("Context sharing is not supported by this server; kept local".into());
+    }
+    Ok(())
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Grant {
+    grant_id: Uuid,
+    expires_at: DateTime<Utc>,
+}
+fn valid_result(id: &Identity, receipt: &ContextReceipt) -> bool {
+    let Ok(base) = url::Url::parse(&id.origin) else {
+        return false;
+    };
+    let Ok(result) = url::Url::parse(&receipt.result_url) else {
+        return false;
+    };
+    result.origin() == base.origin()
+        && result.username().is_empty()
+        && result.password().is_none()
+        && result.fragment().is_none()
+        && id
+            .code
+            .as_ref()
+            .is_some_and(|code| result.path() == format!("/{code}/assessments"))
+        && result.query_pairs().collect::<Vec<_>>()
+            == vec![(
+                "assessmentId".into(),
+                receipt.assessment_id.to_string().into(),
+            )]
+}
+fn sources_unchanged(runtime: &Runtime, preview: &Preview) -> Result<(), String> {
+    let p =
+        ContextPackage::from_json(&preview.package_json, Utc::now()).map_err(|e| e.to_string())?;
+    let episodes: Vec<_> = runtime
+        .store
+        .candidates()
+        .into_iter()
+        .flat_map(|c| c.episodes)
+        .collect();
+    if p.episodes.iter().any(|e| !episodes.contains(e)) {
+        return Err("Episode evidence changed; prepare a new preview".into());
+    }
+    let workflows = runtime.store.workflows();
+    for expected in &p.workflows {
+        let Some(mut actual) = workflows.iter().find(|w| w.id == expected.id).cloned() else {
+            return Err("Workflow removed; prepare a new preview".into());
+        };
+        actual
+            .episode_ids
+            .retain(|id| p.episodes.iter().any(|e| e.id == *id));
+        if actual != *expected {
+            return Err("Workflow evidence changed; prepare a new preview".into());
+        }
+    }
+    Ok(())
+}
+#[tauri::command]
+pub async fn send_context_package(app: AppHandle, token: String) -> Result<ContextReceipt, String> {
+    let state = app.state::<ContextState>().inner().clone();
+    let _sending = state
+        .send_lock
+        .try_lock()
+        .map_err(|_| "A context request is already running")?;
+    let id = identity(&app).await;
+    let scope = id.scope.clone();
+    let preview = with_runtime(&app, move |r| {
+        let p = r.preview.as_ref().ok_or("Prepare a new preview")?;
+        if r.revocation_pending
+            || !r.personal_os_login
+            || p.token != token
+            || !r.authority.permits(p, &scope)
+        {
+            return Err("Preview is no longer authorized".into());
+        }
+        sources_unchanged(r, p)?;
+        Ok(p.clone())
+    })
+    .await?;
+    let epoch = state.epoch.load(Ordering::SeqCst);
+    let package =
+        ContextPackage::from_json(&preview.package_json, Utc::now()).map_err(|e| e.to_string())?;
+    capability(&app, &id, epoch).await?;
+    let grant:Grant=request(&app,&id,epoch,ContextRoute::Grants,Some(serde_json::json!({"packageId":package.package_id,"workspaceId":package.workspace_id,"accountDeviceId":package.account_device_id,"audience":package.audience,"policyVersion":1,"sha256":preview.sha256}))).await?;
+    if grant.expires_at <= Utc::now()
+        || grant.expires_at
+            > Utc::now() + chrono::Duration::hours(24) + chrono::Duration::minutes(5)
+    {
+        return Err("Invalid grant expiry".into());
+    }
+    let receipt:ContextReceipt=request(&app,&id,epoch,ContextRoute::Packages,Some(serde_json::json!({"grantId":grant.grant_id,"packageJson":preview.package_json,"sha256":preview.sha256}))).await?;
+    if receipt.package_id != package.package_id
+        || !preview.receipt_matches(&receipt.sha256)
+        || !valid_result(&id, &receipt)
+    {
+        return Err("Receipt mismatch; delivery unconfirmed".into());
+    }
+    Ok(receipt)
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Deleted {
+    deleted: bool,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Revoked {
+    revoked: bool,
+}
+#[tauri::command]
+pub async fn delete_shared_context(app: AppHandle, package_id: Option<Uuid>) -> Result<(), String> {
+    let state = app.state::<ContextState>().inner().clone();
+    state.pause();
+    with_runtime(&app, move |r| {
+        r.invalidate();
+        r.settings.paused = true;
+        if package_id.is_none() {
+            r.recurring = None;
+            r.revocation_pending = true;
+        }
+        Ok(())
+    })
+    .await?;
+    let id = identity(&app).await;
+    let epoch = state.epoch.load(Ordering::SeqCst);
+    if let Some(package_id) = package_id {
+        let result: Deleted = request(
+            &app,
+            &id,
+            epoch,
+            ContextRoute::DeletePackage(package_id),
+            None,
+        )
+        .await?;
+        if !result.deleted {
+            return Err("Remote deletion unconfirmed".into());
+        }
+    } else {
+        let result: Revoked = request(&app, &id, epoch, ContextRoute::Revoke, None).await?;
+        if !result.revoked {
+            return Err("Remote revocation unconfirmed".into());
+        }
+        with_runtime(&app, |r| {
+            r.recurring = None;
+            r.revocation_pending = false;
+            Ok(())
+        })
+        .await?;
+    }
+    Ok(())
+}
+async fn revoke_recurring(app: &AppHandle) -> Result<(), String> {
+    let exists = app
+        .state::<ContextState>()
+        .runtime
+        .lock()
+        .map_err(|_| "Context unavailable")?
+        .as_ref()
+        .is_some_and(|r| r.recurring.is_some() || r.revocation_pending);
+    if exists {
+        delete_shared_context(app.clone(), None).await?;
+    }
+    Ok(())
+}
+// Matches Python json.dumps(sort_keys=True, ensure_ascii=False, separators=(",",":"))
+// for this closed schema's bounded optional f64 metrics. All other numbers are integers.
+fn summary_hash(package: &ContextPackage) -> Result<String, String> {
+    fn canonical(value: &serde_json::Value) -> String {
+        match value {
+            serde_json::Value::Object(map) => {
+                let sorted: BTreeMap<_, _> = map.iter().collect();
+                format!(
+                    "{{{}}}",
+                    sorted
+                        .iter()
+                        .map(|(k, v)| format!(
+                            "{}:{}",
+                            serde_json::to_string(k).unwrap(),
+                            canonical(v)
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )
+            }
+            serde_json::Value::Array(items) => format!(
+                "[{}]",
+                items.iter().map(canonical).collect::<Vec<_>>().join(",")
+            ),
+            serde_json::Value::Number(number) if number.is_f64() => {
+                let n = number.as_f64().unwrap();
+                if n != 0.0 && n.abs() < 0.0001 {
+                    let scientific = format!("{n:e}");
+                    let (mantissa, exponent) = scientific.split_once('e').unwrap();
+                    let exponent: i32 = exponent.parse().unwrap();
+                    format!("{mantissa}e{exponent:+03}")
+                } else {
+                    number.to_string()
+                }
+            }
+            _ => value.to_string(),
+        }
+    }
+    let selection = serde_json::json!({"apps":package.apps,"workflows":package.workflows});
+    Ok(hash(canonical(&selection).as_bytes()))
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SummaryGrant {
+    grant_id: Uuid,
+    selection_sha256: String,
+}
+#[tauri::command]
+pub async fn enable_context_summary(
+    app: AppHandle,
+    token: String,
+    own_os_login: bool,
+) -> Result<(), String> {
+    if !own_os_login {
+        return Err("Shared OS logins support inventory only".into());
+    }
+    let state = app.state::<ContextState>().inner().clone();
+    let _lock = state
+        .send_lock
+        .try_lock()
+        .map_err(|_| "A context request is already running")?;
+    revoke_recurring(&app).await?;
+    let id = identity(&app).await;
+    let scope = id.scope.clone();
+    let preview = with_runtime(&app, move |r| {
+        let p = r
+            .preview
+            .as_ref()
+            .ok_or("Preview the daily selection first")?;
+        if r.revocation_pending
+            || !r.personal_os_login
+            || p.token != token
+            || !r.authority.permits(p, &scope)
+        {
+            return Err("Preview changed".into());
+        }
+        sources_unchanged(r, p)?;
+        Ok(p.clone())
+    })
+    .await?;
+    let p =
+        ContextPackage::from_json(&preview.package_json, Utc::now()).map_err(|e| e.to_string())?;
+    if p.audience != Audience::Company
+        || !p.episodes.is_empty()
+        || p.scan.is_some()
+        || p.workflows.iter().any(|w| !w.episode_ids.is_empty())
+    {
+        return Err("Daily summaries require company audience and no episodes or scan".into());
+    }
+    let epoch = state.epoch.load(Ordering::SeqCst);
+    capability(&app, &id, epoch).await?;
+    let grant:SummaryGrant=request(&app,&id,epoch,ContextRoute::SummaryGrants,Some(serde_json::json!({"workspaceId":p.workspace_id,"accountDeviceId":p.account_device_id,"policyVersion":1,"apps":p.apps,"workflows":p.workflows,"sharedOsLogin":false}))).await?;
+    if grant.selection_sha256 != summary_hash(&p)?
+        || grant.selection_sha256.len() != 64
+        || !grant
+            .selection_sha256
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err("Invalid summary grant".into());
+    }
+    with_runtime(&app, move |r| {
+        if r.identity != id || !r.authority.permits(&preview, &id.scope) {
+            return Err("Selection changed; revoke shared context".into());
+        }
+        r.recurring = Some(Recurring {
+            grant_id: grant.grant_id,
+            selection_sha256: grant.selection_sha256,
+            day: None,
+            identity: id,
+        });
+        Ok(())
+    })
+    .await
+}
+#[tauri::command]
+pub async fn open_context_result(app: AppHandle, receipt: ContextReceipt) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    if !valid_result(&identity(&app).await, &receipt) {
+        return Err("Invalid assessment destination".into());
+    }
+    app.opener()
+        .open_url(receipt.result_url, None::<&str>)
+        .map_err(|_| "Could not open assessment".into())
+}
+/// No persisted queue: a normalized browser observation must pass all current vetoes.
+pub fn ingest_browser_observation(state: &ContextState, action: Action) -> bool {
+    if !state.gate.is_active() || !session_available() {
+        state.pause();
+        return false;
+    }
+    let Ok(mut slot) = state.runtime.try_lock() else {
+        return false;
+    };
+    let Some(r) = slot.as_mut() else { return false };
+    if !r.settings.allows_app("web:google-sheets")
+        || !r
+            .settings
+            .allowed_domains
+            .iter()
+            .any(|d| d == "docs.google.com")
+        || r.last_browser
+            .is_some_and(|t| t.elapsed() < Duration::from_secs(1))
+    {
+        return false;
+    }
+    if r.check_key().is_err() {
+        state.pause();
+        return false;
+    }
+    if !state.gate.is_active() || !session_available() {
+        state.pause();
+        return false;
+    }
+    r.last_browser = Some(Instant::now());
+    r.store
+        .append(ContextEvent {
+            id: Uuid::new_v4(),
+            at: Utc::now(),
+            app_id: "web:google-sheets".into(),
+            app_name: "Google Sheets".into(),
+            action,
+            object_category: ObjectCategory::Spreadsheet,
+            provenance: Provenance::Inferred,
+            gap: None,
+        })
+        .is_ok()
+}
+pub fn browser_status(state: &ContextState, pause: bool) -> bool {
+    if pause {
+        if let Ok(mut slot) = state.runtime.try_lock() {
+            if let Some(r) = slot.as_mut() {
+                r.last_browser = None;
+            }
+        }
+        return false;
+    }
+    state.gate.is_active()
+        && session_available()
+        && state.runtime.try_lock().ok().is_some_and(|slot| {
+            slot.as_ref().is_some_and(|r| {
+                r.settings.allows_app("web:google-sheets")
+                    && r.settings
+                        .allowed_domains
+                        .iter()
+                        .any(|d| d == "docs.google.com")
+            })
+        })
+}
+pub fn start(app: AppHandle) {
+    install_session_notifications(app.state::<ContextState>().inner().clone());
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut last = Instant::now();
+        let mut ticks = 0u64;
+        loop {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            let state = handle.state::<ContextState>().inner().clone();
+            if state.gate.is_active()
+                && (last.elapsed() > Duration::from_secs(2) || !session_available())
+            {
+                state.pause();
+            }
+            last = Instant::now();
+            let config = handle.state::<AgentState>().config.lock().await.clone();
+            let id = Identity::from_config(&config);
+            if state.gate.is_active() && (config.kill_switch || config.update_required()) {
+                state.pause();
+            }
+            if let Ok(mut slot) = state.runtime.try_lock() {
+                if let Some(r) = slot.as_mut() {
+                    if r.identity != id {
+                        state.pause();
+                        *slot = None;
+                    }
+                }
+            }
+            ticks += 1;
+            if ticks == 1 || ticks.is_multiple_of(240) {
+                if let Ok(dir) = handle.path().app_data_dir() {
+                    let current = state
+                        .runtime
+                        .lock()
+                        .ok()
+                        .and_then(|r| r.as_ref().map(|r| r.identity.scope.clone()));
+                    let result = tauri::async_runtime::spawn_blocking(move || {
+                        prune_other_scopes(&dir.join("context"), current.as_deref())
+                    })
+                    .await;
+                    if !matches!(result, Ok(Ok(()))) {
+                        if let Ok(mut slot) = state.runtime.lock() {
+                            if let Some(r) = slot.as_mut() {
+                                r.error=Some("Could not prune a previous account's encrypted history; erase local context or restore secure storage".into());
+                            }
+                        }
+                    }
+                }
+            }
+            if ticks.is_multiple_of(4) {
+                let worker = state.clone();
+                let _ = tauri::async_runtime::spawn_blocking(move || {
+                    let Ok(mut slot) = worker.runtime.try_lock() else {
+                        return;
+                    };
+                    let Some(r) = slot.as_mut() else { return };
+                    if ticks.is_multiple_of(240) {
+                        let generation = r.authority.generation;
+                        if let Err(e) = r.prune() {
+                            r.error = Some(e);
+                            worker.pause();
+                        }
+                        if r.authority.generation != generation {
+                            worker.epoch.fetch_add(1, Ordering::SeqCst);
+                        }
+                    }
+                    if !worker.gate.is_active() {
+                        return;
+                    }
+                    if r.check_key().is_err() {
+                        worker.pause();
+                        r.error = Some("Secure storage unavailable".into());
+                        return;
+                    }
+                    match r.collector.observe(&r.settings) {
+                        Ok(Some(event)) if worker.gate.is_active() && session_available() => {
+                            if let Err(e) = r.store.append(event) {
+                                r.error = Some(e.to_string());
+                                worker.pause();
+                            }
+                        }
+                        Err(e) => {
+                            r.error = Some(e.to_string());
+                            worker.pause();
+                        }
+                        _ => {}
+                    }
+                    let gap = r.collector.last_gap();
+                    if gap == Some(Gap::Locked) {
+                        worker.pause();
+                    }
+                    if gap != r.last_gap {
+                        r.last_gap = gap;
+                        if let Some(gap) = gap {
+                            let _ = r.store.append(ContextEvent::coverage_gap(Utc::now(), gap));
+                        }
+                    }
+                })
+                .await;
+            }
+        }
+    });
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            let state = app.state::<ContextState>().inner().clone();
+            let Ok(_lock) = state.send_lock.try_lock() else {
+                continue;
+            };
+            let recurring = state
+                .runtime
+                .lock()
+                .ok()
+                .and_then(|slot| slot.as_ref().and_then(|r| r.recurring.clone()));
+            let Some(recurring) = recurring else { continue };
+            let day = Utc::now().date_naive();
+            if recurring.day == Some(day) {
+                continue;
+            }
+            let epoch = state.epoch.load(Ordering::SeqCst);
+            // Coverage of the frozen summary selection is conservative; no fresh apps/episodes enter it.
+            let result:Result<ContextReceipt,String>=request(&app,&recurring.identity,epoch,ContextRoute::Summaries,Some(serde_json::json!({"grantId":recurring.grant_id,"day":day,"coverage":{"observedDays":0,"gaps":["insufficient_evidence"]}}))).await;
+            if let Ok(mut slot) = state.runtime.lock() {
+                if let Some(r) = slot.as_mut() {
+                    if r.recurring.as_ref().is_some_and(|g| {
+                        g.grant_id == recurring.grant_id
+                            && g.selection_sha256 == recurring.selection_sha256
+                    }) {
+                        match result {
+                            Ok(receipt) if valid_result(&recurring.identity, &receipt) => {
+                                if let Some(g) = r.recurring.as_mut() {
+                                    g.day = Some(day);
+                                }
+                                r.error = None;
+                            }
+                            _ => r.error = Some("Daily summary delivery unconfirmed".into()),
+                        }
+                    }
+                }
+            };
+        }
+    });
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn deleted_workflow_and_expired_sources_invalidate_a_real_store_preview() {
+        let dir = std::env::temp_dir().join(format!("context-sources-test-{}", Uuid::new_v4()));
+        let path = dir.join("synthetic.bin");
+        let mut store = ContextStore::open(&path, [37; 32]).unwrap();
+        let now = Utc::now();
+        let mut p = ContextPackage::from_json(
+            include_str!("../fixtures/context-package-v1.json"),
+            DateTime::parse_from_rfc3339("2026-10-29T02:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        )
+        .unwrap();
+        p.captured_from = now;
+        p.captured_to = now;
+        p.consented_at = now;
+        store.save_workflow(p.workflows[0].clone()).unwrap();
+        store
+            .append(ContextEvent::coverage_gap(
+                now - chrono::Duration::days(3),
+                Gap::Unsupported,
+            ))
+            .unwrap();
+        let mut r = Runtime {
+            identity: Identity::from_config(&AgentConfig::default()),
+            store,
+            settings: ContextSettings::default(),
+            collector: Collector::default(),
+            authority: Authority::default(),
+            preview: None,
+            recurring: None,
+            last_gap: None,
+            last_browser: None,
+            error: None,
+            personal_os_login: true,
+            key_fingerprint: hash(&[37; 32]),
+            revocation_pending: false,
+        };
+        let preview = r
+            .authority
+            .freeze(&r.identity.scope, &p.to_json(now).unwrap());
+        assert!(sources_unchanged(&r, &preview).is_ok());
+        r.prune().unwrap();
+        assert!(!r.authority.permits(&preview, &r.identity.scope));
+        r.store.delete_workflow(p.workflows[0].id).unwrap();
+        assert!(sources_unchanged(&r, &preview).is_err());
+        drop(r);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn assessment_links_cannot_escape_the_configured_account_destination() {
+        let mut id = Identity::from_config(&AgentConfig::default());
+        id.code = Some("12345678".into());
+        id.origin = "https://monitor.example".into();
+        let mut receipt = ContextReceipt {
+            package_id: Uuid::new_v4(),
+            sha256: String::new(),
+            received_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::days(90),
+            assessment_id: Uuid::new_v4(),
+            result_url: String::new(),
+        };
+        receipt.result_url = format!(
+            "https://monitor.example/12345678/assessments?assessmentId={}",
+            receipt.assessment_id
+        );
+        assert!(valid_result(&id, &receipt));
+        for changed in [
+            receipt
+                .result_url
+                .replace("monitor.example", "other.example"),
+            receipt.result_url.replace("12345678", "87654321"),
+            format!("{}&redirect=bad", receipt.result_url),
+        ] {
+            receipt.result_url = changed;
+            assert!(!valid_result(&id, &receipt));
+        }
+    }
+    #[test]
+    fn erase_needs_no_key_removes_orphans_and_respects_live_store_locks() {
+        let dir = std::env::temp_dir().join(format!("context-erasure-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let scope = "a".repeat(64);
+        let path = dir.join(format!("{scope}.bin"));
+        let mut store = ContextStore::open(&path, [91; 32]).unwrap();
+        store
+            .append(ContextEvent::coverage_gap(Utc::now(), Gap::Unsupported))
+            .unwrap();
+        let orphan = dir.join(format!("{scope}.bin.context-tmp.{}.tmp", Uuid::new_v4()));
+        std::fs::copy(&path, &orphan).unwrap();
+        std::fs::write(dir.join("unrelated.txt"), b"preserve").unwrap();
+        assert!(erase_context_files(&dir).is_err());
+        assert!(path.exists());
+        drop(store);
+        erase_context_files(&dir).unwrap();
+        assert!(!path.exists());
+        assert!(!orphan.exists());
+        assert_eq!(
+            std::fs::read(dir.join("unrelated.txt")).unwrap(),
+            b"preserve"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn python_contract_fixture_and_summary_hash_round_trip() {
+        let now = DateTime::parse_from_rfc3339("2026-10-29T02:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let p = ContextPackage::from_json(include_str!("../fixtures/context-package-v1.json"), now)
+            .unwrap();
+        let encoded = p.to_json(now).unwrap();
+        assert_eq!(ContextPackage::from_json(&encoded, now).unwrap(), p);
+        assert_eq!(
+            summary_hash(&p).unwrap(),
+            include_str!("../fixtures/context-summary-v1.sha256").trim()
+        );
+    }
+    #[test]
+    fn account_switch_changes_scope_and_revocation_cancels_native_gate() {
+        let mut config = AgentConfig::default();
+        let local = Identity::from_config(&config);
+        config.account = Some(crate::agent::AccountConfig {
+            device_id: Uuid::new_v4().to_string(),
+            workspace_id: Some(Uuid::new_v4().to_string()),
+            ..Default::default()
+        });
+        let signed_in = Identity::from_config(&config);
+        assert_ne!(local.scope, signed_in.scope);
+        config.account.as_mut().unwrap().device_id = Uuid::new_v4().to_string();
+        assert_ne!(signed_in.scope, Identity::from_config(&config).scope);
+        let state = ContextState::default();
+        let mut collector = Collector::default();
+        *state.native_gate.lock().unwrap() = Some(collector.session_gate());
+        // Explicit synthetic opt-in; this test never calls observe/native capture.
+        collector.set_session_active(true);
+        let generation = state.gate.generation();
+        assert!(state.gate.activate_explicitly(generation));
+        let before = state.epoch.load(Ordering::SeqCst);
+        state.pause();
+        assert!(!state.gate.is_active());
+        assert!(!state.gate.activate_explicitly(generation));
+        assert!(!collector.session_gate().is_active());
+        assert_ne!(before, state.epoch.load(Ordering::SeqCst));
+    }
+    #[test]
+    fn frozen_preview_is_invalid_after_source_or_identity_change() {
+        let mut authority = Authority::default();
+        let frozen = authority.freeze("identity-a", "{\"approved\":true}");
+        assert!(authority.permits(&frozen, "identity-a"));
+        assert!(!authority.permits(&frozen, "identity-b"));
+        assert_eq!(frozen.sha256, hash(frozen.package_json.as_bytes()));
+        authority.invalidate();
+        assert!(!authority.permits(&frozen, "identity-a"));
+    }
+    #[test]
+    fn changed_bytes_or_receipt_cannot_reuse_consent() {
+        let authority = Authority::default();
+        let mut frozen = authority.freeze("identity-a", "{}");
+        assert!(frozen.receipt_matches(&frozen.sha256));
+        assert!(!frozen.receipt_matches(&hash(b"different")));
+        frozen.package_json.push(' ');
+        assert!(!authority.permits(&frozen, "identity-a"));
+    }
+}
+
+#[tauri::command]
+pub async fn cancel_context_preview(app: AppHandle) {
+    let state = app.state::<ContextState>();
+    state.epoch.fetch_add(1, Ordering::SeqCst);
+    if let Ok(mut slot) = state.runtime.lock() {
+        if let Some(r) = slot.as_mut() {
+            r.invalidate();
+        }
+    };
+}
+
+fn context_scopes(dir: &std::path::Path) -> Result<Vec<String>, String> {
+    if !dir.exists() {
+        return Ok(vec![]);
+    }
+    if std::fs::symlink_metadata(dir)
+        .map_err(|_| "Context directory unavailable")?
+        .file_type()
+        .is_symlink()
+    {
+        return Err("Refusing linked context directory".into());
+    }
+    let mut scopes = BTreeSet::new();
+    for entry in std::fs::read_dir(dir).map_err(|_| "Context directory unavailable")? {
+        let entry = entry.map_err(|_| "Context entry unavailable")?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let Some((scope, _)) = name.split_once('.') else {
+            continue;
+        };
+        if scope.len() == 64 && scope.bytes().all(|b| b.is_ascii_hexdigit()) {
+            scopes.insert(scope.to_owned());
+        }
+    }
+    Ok(scopes.into_iter().collect())
+}
+/// Erasure needs no decryption key. Lock the store namespace before removing its exact files.
+fn erase_context_files(dir: &std::path::Path) -> Result<(), String> {
+    for scope in context_scopes(dir)? {
+        let lock_path = dir.join(format!("{scope}.context-lock"));
+        if std::fs::symlink_metadata(&lock_path).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err("Refusing linked context lock".into());
+        }
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(lock_path)
+            .map_err(|_| "Context lock unavailable")?;
+        lock.try_lock()
+            .map_err(|_| "Context is open elsewhere; close it before erasing")?;
+        for entry in std::fs::read_dir(dir).map_err(|_| "Context directory unavailable")? {
+            let entry = entry.map_err(|_| "Context entry unavailable")?;
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name == format!("{scope}.bin")
+                || (name.starts_with(&format!("{scope}.bin.context-tmp."))
+                    && name.ends_with(".tmp"))
+            {
+                std::fs::remove_file(entry.path())
+                    .map_err(|_| "Local context deletion incomplete")?;
+            }
+        }
+        // Keep the lock inode stable so another process cannot open a replacement lock.
+    }
+    #[cfg(unix)]
+    if dir.exists() {
+        std::fs::File::open(dir)
+            .and_then(|f| f.sync_all())
+            .map_err(|_| "Context deletion could not be synced")?;
+    }
+    Ok(())
+}
+fn prune_other_scopes(dir: &std::path::Path, current: Option<&str>) -> Result<(), String> {
+    for scope in context_scopes(dir)? {
+        if current == Some(scope.as_str()) {
+            continue;
+        }
+        let path = dir.join(format!("{scope}.bin"));
+        if !path.exists() {
+            continue;
+        }
+        let secret = key(&scope, false)?;
+        let mut store = ContextStore::open(&path, secret).map_err(|e| e.to_string())?;
+        store.prune(Utc::now()).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}

@@ -884,6 +884,83 @@ impl AgentClient {
     }
 }
 
+/// Closed desktop-context routes. No caller-supplied URL can receive the account token.
+#[derive(Clone, Copy)]
+pub enum ContextRoute {
+    Capabilities,
+    Grants,
+    Packages,
+    DeletePackage(uuid::Uuid),
+    Revoke,
+    SummaryGrants,
+    Summaries,
+}
+impl ContextRoute {
+    fn method_path(self) -> (reqwest::Method, String) {
+        use reqwest::Method;
+        let (method, leaf) = match self {
+            Self::Capabilities => (Method::GET, "capabilities".into()),
+            Self::Grants => (Method::POST, "grants".into()),
+            Self::Packages => (Method::POST, "packages".into()),
+            Self::DeletePackage(id) => (Method::DELETE, format!("packages/{id}")),
+            Self::Revoke => (Method::DELETE, "grants".into()),
+            Self::SummaryGrants => (Method::POST, "summary-grants".into()),
+            Self::Summaries => (Method::POST, "summaries".into()),
+        };
+        (method, format!("{DESKTOP_API_BASE_PATH}/context/{leaf}"))
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ContextReceipt {
+    pub package_id: uuid::Uuid,
+    pub sha256: String,
+    pub received_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub assessment_id: uuid::Uuid,
+    pub result_url: String,
+}
+impl AgentClient {
+    pub async fn context_request<T: DeserializeOwned>(
+        &self,
+        token: &str,
+        route: ContextRoute,
+        body: Option<&serde_json::Value>,
+    ) -> SyncResult<T> {
+        let (method, path) = route.method_path();
+        let http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(std::time::Duration::from_secs(20))
+            .build()?;
+        let mut request = http
+            .request(method, format!("{}{}", self.base_url, path))
+            .bearer_auth(token);
+        if let Some(body) = body {
+            request = request.json(body);
+        }
+        let mut response = request.send().await?;
+        let status = response.status().as_u16();
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            if bytes.len() + chunk.len() > 65_536 {
+                return Err(SyncError::Envelope("context response too large".into()));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let text = std::str::from_utf8(&bytes)
+            .map_err(|_| SyncError::Envelope("invalid context response".into()))?;
+        // Never include server echoes of private package content in errors/logs.
+        decode(status, text).map_err(|err| match err {
+            SyncError::Api { status, code, .. } => SyncError::Api {
+                status,
+                code,
+                message: "Context request was not confirmed".into(),
+            },
+            _ => SyncError::Envelope("invalid context response".into()),
+        })
+    }
+}
+
 /// Turns a response into its envelope's `data`, or the API's error with the
 /// envelope's `error.code` and `error.message` when it sent them.
 fn decode<TRes: DeserializeOwned>(status: u16, text: &str) -> SyncResult<TRes> {
@@ -1569,3 +1646,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod context_tests;

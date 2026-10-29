@@ -342,3 +342,94 @@ export type SendResult = {
   };
   matches: boolean;
 };
+
+export type ContextAction =
+  | "navigate"
+  | "read"
+  | "search"
+  | "create"
+  | "edit"
+  | "export"
+  | "import"
+  | "approve"
+  | "send"
+  | "unknown";
+export type ContextGap =
+  | "permission_denied"
+  | "excluded"
+  | "private_or_unknown_browser"
+  | "locked"
+  | "capacity"
+  | "unsupported"
+  | "offline"
+  | "insufficient_evidence";
+export type ContextSettings = {
+  enabled: boolean;
+  paused: boolean;
+  allowedAppIds: string[];
+  allowedDomains: string[];
+};
+export type ContextStep = {
+  ordinal: number;
+  appId: string;
+  action: ContextAction;
+  objectCategory: "crm_record" | "spreadsheet" | "invoice" | "message" | "file" | "unknown";
+  provenance: "observed" | "inferred" | "user_confirmed";
+};
+export type ContextEvent = Omit<ContextStep, "ordinal"> & {
+  id: string;
+  at: string;
+  appName: string;
+  gap: ContextGap | null;
+};
+export type ContextEpisode = {
+  id: string;
+  day: string;
+  repeatCount: number;
+  extractionVersion: 1;
+  steps: ContextStep[];
+  gaps: ContextGap[];
+};
+export type ContextWorkflow = {
+  id: string;
+  name: string;
+  purpose: string;
+  appIds: string[];
+  steps: string[];
+  exceptions: string;
+  requiredFeatures: string;
+  frequencyPerWeek: number | null;
+  minutesPerRun: number | null;
+  confirmed: boolean;
+  ownsCustomCode: boolean | null;
+  episodeIds: string[];
+};
+export type ContextCandidate = {
+  id: string;
+  steps: ContextStep[];
+  eventIds: string[];
+  episodes: ContextEpisode[];
+  observedDays: number;
+  repeatCount: number;
+  evidenceExpired: boolean;
+};
+export type ContextHistory = {
+  ownOsLogin: boolean;
+  settings: ContextSettings;
+  active: boolean;
+  events: ContextEvent[];
+  candidates: ContextCandidate[];
+  workflows: ContextWorkflow[];
+  recurring: boolean;
+  error: string | null;
+  gap: ContextGap | null;
+};
+export type ContextPreview = { token: string; packageJson: string; sha256: string };
+export type ContextReceipt = {
+  packageId: string;
+  sha256: string;
+  receivedAt: string;
+  expiresAt: string;
+  assessmentId: string;
+  resultUrl: string;
+};

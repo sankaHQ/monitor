@@ -81,3 +81,40 @@ privacy permission.
 The Sanka API (`api-v2.sanka.com`) and the Monitor console are maintained
 separately and are not in this repository. Report suspected vulnerabilities in them
 through the same private contact.
+
+## Opt-in work context boundary
+
+Work History is independent of enrollment and existing inventory/usage contracts.
+Capture starts only after explicit app/site selection and personal OS-login
+confirmation. The app and companion each require consent. Unknown/private browser
+surfaces, editable content and unsupported native profiles are excluded. Only
+closed normalized actions/categories are retained; no raw labels, titles, URLs,
+document contents, screen/audio, inputs or clipboard enter the context store.
+
+Context keys and the ephemeral browser-relay secret live in the current OS user's
+secure storage. Files use owner-only permissions on Unix and the user's private
+AppData profile on Windows. Account namespaces never adopt another account's
+unsent records. OS session notifications pause without waiting for storage locks;
+foreground/session checks and consent generation checks veto stale results.
+The app does not resume on unlock/wake. Missing notification setup/key access
+fails closed. The native host validates the committed extension origin and 4 KiB
+closed frames, authenticates loopback requests, and handles one bounded client
+at a time with deadlines. No externally connectable page channel exists.
+
+Preview tokens bind immutable bytes, account/workspace/device, destination and
+current local source evidence. Sends and retries recheck identity, policy and
+consent. Only the signed-in account's short-lived runtime token is used, never
+the enrolled device credential. Cloud grants are obtained only on explicit Send.
+Receipt hashes and same-origin canonical assessment URLs are checked. Daily
+company grants freeze only approved apps/descriptions; edits/revocation stop local
+scheduling before any network wait. Failed delivery/deletion remains unconfirmed.
+
+Raw context expires after 48 hours, minimized occurrences after 30 days; saved
+user-authored descriptions are separately deletable. Prior account stores are
+pruned while the app runs. If their secure keys are unavailable, the UI reports
+that retention cannot be completed and offers key-independent erase-all. Erasure
+locks each exact namespace and removes its encrypted snapshots and orphan files.
+Remote erasure is separate and needs a confirmed server response; sign-out also
+uses the server's account/device revocation hook. Shared OS logins must remain
+inventory-only. A malicious process running as the same OS user is outside this
+local-isolation boundary; this is not protection against an OS administrator.

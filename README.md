@@ -357,3 +357,63 @@ and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Report vulnerabilities pri
 as described in [SECURITY.md](SECURITY.md). To contribute, start with
 [CONTRIBUTING.md](CONTRIBUTING.md). The Sanka API and the Monitor console are not part
 of this repository.
+
+## Private Work History (opt-in preview)
+
+Work History is an independent desktop mode, off by default. It does not require
+an account or enrollment. Choose specific apps and confirm that the OS login is
+yours, then explicitly enable/resume. Shared OS logins remain inventory-only.
+Lock, sleep, user switching, revoked secure storage and workspace pause/update
+policy stop richer capture. Unlocking never resumes it; restarting begins paused.
+Existing scans and coarse usage keep their separate settings.
+
+Initial richer profiles are **Google Sheets in Chrome or Edge** through the
+[companion extension](apps/browser-extension/README.md), system TextEdit on macOS,
+and classic system Notepad on Windows. Native Excel, Store Notepad and other
+surfaces are unsupported. Native capture needs the person's OS Accessibility/UIA
+access; Monitor does not grant it. Normalized actions are inferred interactions,
+not proof that an operation completed. No titles, full URLs, documents/cells,
+input values, keystrokes, clipboard, screenshots or audio are recorded.
+
+Review local events, gaps and repeated sequences in Work History. A candidate
+requires three occurrences across two days. Correct/save its business description
+or create one yourself. Missing evidence is shown as missing, never as unused
+software or lack of work. Encrypted events expire after 48 hours; minimized
+occurrences after 30 days. Saved descriptions remain until deleted. The key lives
+in the current OS user's secure storage; there is no plaintext fallback. Accounts
+use separate stores, so signing in/out never reassigns unsent history. Older
+accounts without a workspace UUID must sign in again **only to share context**.
+
+To share, select apps, episodes and saved descriptions, choose personal/company,
+and inspect the exact JSON and SHA-256 preview. An optional current scan appears
+in that preview. Send obtains a grant for those exact bytes using the signed-in
+account, independently of any enrolled agent token. Unsupported servers leave the
+package local. Receipt/hash or result-origin mismatches are unconfirmed delivery.
+Personal packages stay private; company evidence is attributable and authorized
+IT administrators need an audit reason. Cloud content expires after 90 days.
+
+Daily company summaries require separate consent to a frozen selection of apps
+and descriptions, with **no episodes or scans**. Edits require revoke + a fresh
+preview. The running app attempts each UTC day idempotently; restart/sign-out
+stops local scheduling and never silently restores it. Revoke explicitly cancels
+local scheduling even offline; remote deletion is only confirmed by a server
+receipt. Local erasure and cloud deletion are separate controls. Erase-all removes
+all account namespaces and their interrupted snapshots without requiring their
+decryption keys, while refusing stores open in another process.
+
+The companion uses the public development identity in
+`apps/browser-extension/identity.json`. Work History's Chrome/Edge setup button
+registers a **per-user** native host; it does not install the extension, request
+browser permissions or enable capture. macOS uses a private launcher under the
+app data directory and the selected browser's NativeMessagingHosts directory;
+Windows uses an app manifest and the selected browser's HKCU registration.
+Unrelated existing registrations are preserved. The host runs the desktop binary's
+`--context-browser-host <extension-origin>` mode (Windows also accepts Chromium's
+direct origin argument), before any app/UI startup. It relays only closed v1
+status/pause/normalized observation frames through a bounded loopback channel with
+a per-launch OS-keychain secret; it cannot fetch history or upload content.
+
+This implementation has synthetic verification, **not real-device qualification**.
+Chrome, Edge, native macOS/Windows permission/lock behavior and resource budgets
+still need an explicit consenting device test before support is advertised. No
+browser-store distribution or production rollout is implied by a successful build.
