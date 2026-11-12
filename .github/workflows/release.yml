@@ -158,7 +158,7 @@ jobs:
   macos:
     name: macOS ${{ matrix.name }} (signed + notarized)
     needs: preflight
-    runs-on: macos-14
+    runs-on: macos-15
     strategy:
       fail-fast: true
       matrix:
