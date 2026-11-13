@@ -103,7 +103,10 @@ visibility of security checks and installed software across the fleet.
 | **One-time code** | Help-desk sessions |
 
 Connecting never turns on app-usage sharing: that stays each person's choice, off
-by default. For a one-off inventory without connecting anything,
+by default. The app never manages a computer; device management on
+monitor.sanka.com is macOS's own MDM, turned on only by a profile each person
+installs ([docs/device-management.md](docs/device-management.md)). For a one-off
+inventory without connecting anything,
 `sanka-monitor-agent scan --out <folder>` writes one CSV per computer and the
 workbooks in `templates/fleet/` merge them ([docs/fleet-scan.md](docs/fleet-scan.md)).
 
