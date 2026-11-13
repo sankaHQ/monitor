@@ -35,13 +35,15 @@ serde_json = { workspace = true }
 # Already in the build (monitor-inventory): the fingerprint of a report sent to Sanka.
 sha2 = "0.10"
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
-# 2.6+ needs tauri 2.12; the workspace is on 2.11.
+# Held at 2.5; moving it to 2.6+ is a separate update.
 tauri-plugin-autostart = "~2.5"
 tauri-plugin-single-instance = "2"
-tauri-plugin-updater = "2"
+# 2.14.1+ uses zip 9 (zip 4 has published security advisories); it needs tauri
+# 2.12, so @tauri-apps/api in apps/agent/package-lock.json stays on 2.12 too.
+tauri-plugin-updater = "2.14.1"
 tauri-plugin-deep-link = "2"
 tauri-plugin-opener = "2"
-# The save dialog for reports. 2.7 is the newest that runs on tauri 2.11.
+# The save dialog for reports. Held at 2.7; moving it is a separate update.
 tauri-plugin-dialog = "~2.7"
 # macros is required for tokio::select!; do not rely on workspace feature
 # unification from dev-dependencies — bin-only builds drop it.
