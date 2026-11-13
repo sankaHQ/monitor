@@ -10,7 +10,7 @@ repository.workspace = true
 [dependencies]
 chrono = { workspace = true }
 monitor-core = { workspace = true }
-rusqlite = { version = "0.32", features = ["bundled", "chrono"] }
+rusqlite = { version = "0.41.1", features = ["bundled", "chrono"] }
 uuid = { workspace = true }
 
 [dev-dependencies]
