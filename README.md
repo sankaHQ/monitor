@@ -198,10 +198,11 @@ Sanka Monitor is local-first:
 
 Checks (user-level: no admin rights, no root daemon, no macOS privacy prompt; `pass:
 null` when a check cannot tell): disk encryption, firewall, Gatekeeper / SmartScreen,
-screen lock, pending OS updates, automatic updates, antivirus (XProtect on macOS,
-Security Center on Windows), the signed-in user is not a local admin, device management
-(MDM; or an Active Directory domain on Windows), Secure Boot (Windows) and System
-Integrity Protection (macOS). TPM is not checked: Windows only reports it to admins.
+screen lock (the screen locks within 10 minutes of inactivity, on battery and plugged
+in), pending OS updates, automatic updates, antivirus (XProtect on macOS, Security
+Center on Windows), the signed-in user is not a local admin, device management (MDM;
+or an Active Directory domain on Windows), Secure Boot (Windows) and System Integrity
+Protection (macOS). TPM is not checked: Windows only reports it to admins.
 
 Installed software: the `.app` bundles in `/Applications` (one level of subfolders,
 never inside a bundle, no symlinks) and `~/Applications` on macOS; the Uninstall

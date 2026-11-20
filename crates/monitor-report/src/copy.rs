@@ -203,12 +203,12 @@ pub fn fix(finding: &Finding, platform: &str, lang: Lang) -> String {
             "普段の作業は標準ユーザーで行い、管理作業には別の管理者アカウントを使ってください。",
         ),
         DeviceScreenLockOff if mac => lang.pick(
-            "Require a password soon after the screen saver starts or the display turns off (System Settings > Lock Screen).",
-            "システム設定 > ロック画面 で、スクリーンセーバー開始後やディスプレイのオフ後すぐにパスワードを要求するよう設定してください。",
+            "Make the screen lock within 10 minutes, on battery and plugged in: in System Settings > Lock Screen, start the screen saver or turn the display off after 10 minutes or less, and require the password immediately.",
+            "バッテリー使用時も電源接続時も、10分以内に画面がロックされるよう設定してください。システム設定 > ロック画面 で、スクリーンセーバーの開始またはディスプレイのオフを10分以内にし、パスワードを「すぐに」要求するよう設定します。",
         ),
         DeviceScreenLockOff => lang.pick(
-            "Set the screen to lock after a few minutes of inactivity (Settings > Accounts > Sign-in options, and the screen saver settings).",
-            "数分間操作がないと画面がロックされるよう設定してください（設定 > アカウント > サインイン オプション、およびスクリーンセーバーの設定）。",
+            "Make the screen lock within 10 minutes, on battery too: use a screen saver of 10 minutes or less with \"On resume, display logon screen\" on, or put the PC to sleep after 10 minutes or less and require sign-in when it wakes (Settings > System > Power & battery, Settings > Accounts > Sign-in options).",
+            "バッテリー使用時も含め、10分以内に画面がロックされるよう設定してください。待ち時間10分以内のスクリーンセーバーで「再開時にログオン画面に戻る」をオンにするか、10分以内にスリープしてスリープ解除時にサインインを求めるよう設定します（設定 > システム > 電源とバッテリー、設定 > アカウント > サインイン オプション）。",
         ),
         DeviceUnmanaged if mac => lang.pick(
             "Enroll the Mac in your device management (MDM) service, such as Intune, Jamf or Kandji.",
@@ -315,6 +315,7 @@ const CHECK_DETAILS_JA: &[(&str, &str)] = &[
         "Automatic updates are turned off by policy",
         "ポリシーで自動アップデートがオフになっています",
     ),
+    ("Battery status unavailable", "バッテリーの状態を取得できません"),
     ("BitLocker is decrypting", "BitLocker が暗号化を解除しています"),
     ("BitLocker is off", "BitLocker がオフです"),
     ("BitLocker is still encrypting", "BitLocker が暗号化を進めています"),
@@ -341,6 +342,10 @@ const CHECK_DETAILS_JA: &[(&str, &str)] = &[
         "macOS のアップデートはユーザーの操作を待ちます",
     ),
     ("No antivirus product registered", "ウイルス対策製品が登録されていません"),
+    (
+        "No password after the screen saver or display sleep",
+        "スクリーンセーバーの開始後やディスプレイのオフ後にパスワードが求められません",
+    ),
     (
         "Not enrolled in MDM or joined to a domain",
         "MDM に登録されておらず、ドメインにも参加していません",
@@ -398,18 +403,67 @@ pub fn check_detail(detail: &str, lang: Lang) -> String {
     if let Some(products) = detail.strip_prefix("Antivirus off: ") {
         return format!("ウイルス対策がオフです：{products}");
     }
-    if let Some(minutes) = detail
-        .strip_prefix("No lock within ")
-        .and_then(|rest| rest.strip_suffix(" min (policy, screensaver, or sleep + sign-in)"))
-    {
+    if let Some((minutes, on_battery)) = detail.strip_prefix("No lock within ").and_then(|rest| {
+        let rest = rest.strip_suffix(" (policy, screensaver, or sleep + sign-in)")?;
+        match rest.strip_suffix(" min on battery") {
+            Some(minutes) => Some((minutes, true)),
+            None => Some((rest.strip_suffix(" min")?, false)),
+        }
+    }) {
+        let when = if on_battery {
+            "バッテリー使用時、"
+        } else {
+            ""
+        };
         return format!(
-            "{minutes}分以内に画面がロックされません（ポリシー、スクリーンセーバー、スリープ後のサインインのいずれも該当しません）"
+            "{when}{minutes}分以内に画面がロックされません（ポリシー、スクリーンセーバー、スリープ後のサインインのいずれも該当しません）"
         );
+    }
+    if let Some(lock_times) = lock_times_ja(detail) {
+        return lock_times;
     }
     if let Some(product) = detail.strip_suffix(" (definitions out of date)") {
         return format!("{product}（定義ファイルが古い状態です）");
     }
     detail.to_string()
+}
+
+/// macOS's screen lock time per power source ("On battery: locks after
+/// 15 min; Plugged in: never locks") in Japanese.
+fn lock_times_ja(detail: &str) -> Option<String> {
+    let duration = |text: &str| {
+        let mut ja = String::new();
+        let mut words = text.split(' ');
+        while let Some(number) = words.next() {
+            number.parse::<u64>().ok()?;
+            let unit = match words.next()? {
+                "min" => "分",
+                "s" => "秒",
+                _ => return None,
+            };
+            ja.push_str(number);
+            ja.push_str(unit);
+        }
+        (!ja.is_empty()).then_some(ja)
+    };
+    let parts = detail
+        .split("; ")
+        .map(|part| {
+            let (source, state) = part.split_once(": ")?;
+            let source = match source {
+                "On battery" => "バッテリー使用時",
+                "Plugged in" => "電源接続時",
+                _ => return None,
+            };
+            let state = match state.strip_prefix("locks after ") {
+                Some(after) => format!("{}後にロックされます", duration(after)?),
+                None if state == "never locks" => "ロックされません".to_string(),
+                None => return None,
+            };
+            Some(format!("{source}：{state}"))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(parts.join("。"))
 }
 
 /// Where a SaaS was found, in one line: its desktop apps, and what the
@@ -748,8 +802,8 @@ pub fn check_why(id: PostureCheckId, platform: &str, lang: Lang) -> &'static str
             "不明なアプリや安全でないダウンロードを実行する前に警告します。",
         ),
         (ScreenLock, _) => lang.pick(
-            "Asks for your password soon after the screen locks, so nobody can use the computer while you're away.",
-            "画面がロックされた後すぐにパスワードを求めるため、席を離れている間にほかの人が PC を使うことはできません。",
+            "Locks the screen and asks for your password within 10 minutes of inactivity, so nobody can use the computer while you're away.",
+            "操作がない状態が続くと10分以内に画面をロックしてパスワードを求めるため、席を離れている間にほかの人が PC を使うことはできません。",
         ),
         (OsUpdate, _) => lang.pick(
             "OS updates fix security holes that attackers already know about.",
@@ -1130,6 +1184,14 @@ mod tests {
                 "Microsoft Defender Antivirus (definitions out of date)",
                 "Microsoft Defender Antivirus（定義ファイルが古い状態です）",
             ),
+            (
+                "On battery: never locks; Plugged in: locks after 10 min 5 s",
+                "バッテリー使用時：ロックされません。電源接続時：10分5秒後にロックされます",
+            ),
+            (
+                "Plugged in: locks after 16 min",
+                "電源接続時：16分後にロックされます",
+            ),
             // Product names and versions are not translated.
             ("XProtect 5367", "XProtect 5367"),
             ("many update(s) pending", "many update(s) pending"),
@@ -1142,5 +1204,10 @@ mod tests {
             Lang::Ja
         )
         .starts_with("30分以内に"));
+        assert!(check_detail(
+            "No lock within 10 min on battery (policy, screensaver, or sleep + sign-in)",
+            Lang::Ja
+        )
+        .starts_with("バッテリー使用時、10分以内に"));
     }
 }

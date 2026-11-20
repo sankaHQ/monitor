@@ -87,6 +87,10 @@ pub trait PostureSource {
     fn collect(&self) -> Vec<PostureCheckResult>;
 }
 
+/// The screen lock check passes when the screen locks within this many
+/// seconds of the last input: 10 minutes, on battery and plugged in.
+pub const SCREEN_LOCK_MAX_SECS: u64 = 600;
+
 pub mod windows;
 
 pub mod macos {
@@ -127,16 +131,153 @@ pub mod macos {
         }
     }
 
-    /// `sysadminctl -screenLock status` (writes to stderr) → screen lock
-    /// configured state.
-    pub fn parse_screen_lock_status(output: &str) -> Option<bool> {
-        let o = output.trim();
-        if o.contains("screenLock is off") {
-            Some(false)
-        } else if o.contains("screenLock delay") || o.contains("screenLock is on") {
-            Some(true)
+    /// How long macOS waits, after the screen saver starts or the display
+    /// turns off, before it asks for the password.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum PasswordDelay {
+        /// No password is asked for.
+        Off,
+        Seconds(u64),
+    }
+
+    /// `sysadminctl -screenLock status` (writes to stderr) → the password
+    /// delay: "screenLock is off", "screenLock delay is immediate" or
+    /// "screenLock delay is N seconds".
+    pub fn parse_screen_lock_status(output: &str) -> Option<PasswordDelay> {
+        if output.contains("screenLock is off") {
+            return Some(PasswordDelay::Off);
+        }
+        let delay = output.split("screenLock delay is ").nth(1)?;
+        if delay.starts_with("immediate") {
+            return Some(PasswordDelay::Seconds(0));
+        }
+        let mut words = delay.split_whitespace();
+        let seconds = words.next()?.parse().ok()?;
+        (words.next() == Some("seconds")).then_some(PasswordDelay::Seconds(seconds))
+    }
+
+    /// The screen saver's start time when `idleTime` is not set: macOS's
+    /// default of 20 minutes.
+    pub const DEFAULT_SCREEN_SAVER_IDLE_SECS: u64 = 1200;
+
+    /// Prints the screen saver's `idleTime` as macOS resolves it (a
+    /// configuration profile, then this Mac's setting, then the user's), or
+    /// `unset`. A JavaScript for Automation read of the user defaults: no
+    /// Apple Events, so no privacy prompt.
+    pub const SCREEN_SAVER_IDLE_SCRIPT: &str = "var v = $.NSUserDefaults.alloc.initWithSuiteName('com.apple.screensaver').objectForKey('idleTime'); v.isNil() ? 'unset' : String(ObjC.unwrap(v))";
+
+    /// [`SCREEN_SAVER_IDLE_SCRIPT`]'s output → seconds of inactivity before
+    /// the screen saver starts (0 = never).
+    pub fn parse_screen_saver_idle(output: &str) -> Option<u64> {
+        match output.trim() {
+            "unset" => Some(DEFAULT_SCREEN_SAVER_IDLE_SECS),
+            value => value
+                .parse::<f64>()
+                .ok()
+                .filter(|secs| secs.is_finite() && *secs >= 0.0)
+                .map(|secs| secs as u64),
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum PowerSource {
+        Battery,
+        PluggedIn,
+    }
+
+    /// `pmset -g custom` → minutes of inactivity before the display turns
+    /// off (0 = never), for each power source the Mac has. Empty when
+    /// unreadable.
+    pub fn parse_display_sleep(output: &str) -> Vec<(PowerSource, u64)> {
+        let mut source = None;
+        let mut found = Vec::new();
+        for line in output.lines() {
+            if !line.starts_with(char::is_whitespace) {
+                source = match line.trim().trim_end_matches(':') {
+                    "Battery Power" => Some(PowerSource::Battery),
+                    "AC Power" => Some(PowerSource::PluggedIn),
+                    _ => None,
+                };
+                continue;
+            }
+            let mut words = line.split_whitespace();
+            if let (Some(source), Some("displaysleep"), Some(minutes)) =
+                (source, words.next(), words.next())
+            {
+                if let Ok(minutes) = minutes.parse() {
+                    found.push((source, minutes));
+                }
+            }
+        }
+        found
+    }
+
+    /// "10 min", "10 min 5 s", "45 s".
+    fn duration(secs: u64) -> String {
+        match (secs / 60, secs % 60) {
+            (0, s) => format!("{s} s"),
+            (m, 0) => format!("{m} min"),
+            (m, s) => format!("{m} min {s} s"),
+        }
+    }
+
+    /// Passes when, on every power source, the screen saver starts or the
+    /// display turns off and the password is asked for within
+    /// [`crate::SCREEN_LOCK_MAX_SECS`] of the last input. A failure names
+    /// each power source that locks later, or never.
+    pub fn screen_lock_state(
+        password: Option<PasswordDelay>,
+        screen_saver_secs: Option<u64>,
+        display_sleep: &[(PowerSource, u64)],
+    ) -> (Option<bool>, Option<String>) {
+        let unknown = || (None, Some("Lock settings unavailable".to_string()));
+        let delay = match password {
+            None => return unknown(),
+            Some(PasswordDelay::Off) => {
+                return (
+                    Some(false),
+                    Some("No password after the screen saver or display sleep".into()),
+                )
+            }
+            Some(PasswordDelay::Seconds(secs)) => secs,
+        };
+        let screen_saver = screen_saver_secs.filter(|secs| *secs > 0);
+        let locks_after = |display_minutes: u64| {
+            let display = (display_minutes > 0).then(|| display_minutes * 60);
+            [screen_saver, display]
+                .into_iter()
+                .flatten()
+                .min()
+                .map(|idle| idle + delay)
+        };
+        if display_sleep.is_empty() {
+            // The screen saver alone covers every power source.
+            return match screen_saver {
+                Some(idle) if idle + delay <= crate::SCREEN_LOCK_MAX_SECS => (Some(true), None),
+                _ => unknown(),
+            };
+        }
+        let late: Vec<String> = display_sleep
+            .iter()
+            .filter_map(|&(source, minutes)| {
+                let source = match source {
+                    PowerSource::Battery => "On battery",
+                    PowerSource::PluggedIn => "Plugged in",
+                };
+                match locks_after(minutes) {
+                    Some(secs) if secs <= crate::SCREEN_LOCK_MAX_SECS => None,
+                    Some(secs) => Some(format!("{source}: locks after {}", duration(secs))),
+                    None => Some(format!("{source}: never locks")),
+                }
+            })
+            .collect();
+        if late.is_empty() {
+            (Some(true), None)
+        } else if screen_saver_secs.is_none() {
+            // An unread screen saver might start sooner.
+            unknown()
         } else {
-            None
+            (Some(false), Some(late.join("; ")))
         }
     }
 
@@ -463,13 +604,21 @@ pub mod macos {
                     collected_at: now,
                 });
 
-                let screen_lock = probe("sysadminctl", &["-screenLock", "status"]);
-                results.push(PostureCheckResult {
-                    id: PostureCheckId::ScreenLock,
-                    pass: screen_lock.as_deref().and_then(parse_screen_lock_status),
-                    detail: None,
-                    collected_at: now,
-                });
+                let password = probe("sysadminctl", &["-screenLock", "status"]);
+                let screen_saver = probe_ok(
+                    "osascript",
+                    &["-l", "JavaScript", "-e", SCREEN_SAVER_IDLE_SCRIPT],
+                );
+                let display_sleep = probe_ok("pmset", &["-g", "custom"]);
+                results.push(result(
+                    PostureCheckId::ScreenLock,
+                    screen_lock_state(
+                        password.as_deref().and_then(parse_screen_lock_status),
+                        screen_saver.as_deref().and_then(parse_screen_saver_idle),
+                        &parse_display_sleep(display_sleep.as_deref().unwrap_or("")),
+                    ),
+                    now,
+                ));
 
                 // The recommended-updates list first (macOS 27 has no count
                 // key), then the count older macOS versions write.
@@ -579,17 +728,88 @@ pub mod macos {
             );
         }
 
+        /// `pmset -g custom` on a MacBook: the display turns off after
+        /// `battery` minutes on battery and `plugged` minutes plugged in.
+        fn pmset(battery: u64, plugged: u64) -> String {
+            format!(
+                "Battery Power:\n Sleep On Power Button 1\n displaysleep         {battery}\n sleep                1\nAC Power:\n Sleep On Power Button 1\n displaysleep         {plugged}\n sleep                1\n"
+            )
+        }
+
         #[test]
         fn screen_lock_fixtures() {
-            assert_eq!(
-                parse_screen_lock_status("2026-09-01 screenLock is off\n"),
-                Some(false)
-            );
-            assert_eq!(
-                parse_screen_lock_status("screenLock delay is 60 seconds\n"),
-                Some(true)
-            );
-            assert_eq!(parse_screen_lock_status("usage: sysadminctl"), None);
+            let sysadminctl = |state: &str| {
+                parse_screen_lock_status(&format!(
+                    "2026-11-21 06:12:31.285 sysadminctl[89525:11342772] screenLock {state}\n"
+                ))
+            };
+            let check = |password: Option<PasswordDelay>, saver: &str, displays: &str| {
+                screen_lock_state(
+                    password,
+                    parse_screen_saver_idle(saver),
+                    &parse_display_sleep(displays),
+                )
+            };
+            let now = sysadminctl("delay is immediate");
+            let desktop = "AC Power:\n displaysleep         15\n";
+            // (password, screen saver idleTime, pmset, pass, detail)
+            for (password, saver, displays, pass, detail) in [
+                (now, "unset", pmset(5, 10).as_str(), Some(true), None),
+                (
+                    now,
+                    "unset",
+                    pmset(5, 15).as_str(),
+                    Some(false),
+                    Some("Plugged in: locks after 15 min"),
+                ),
+                // The screen saver covers every power source.
+                (now, "300", pmset(0, 30).as_str(), Some(true), None),
+                (now, "300", "", Some(true), None),
+                (
+                    now,
+                    "0",
+                    pmset(0, 15).as_str(),
+                    Some(false),
+                    Some("On battery: never locks; Plugged in: locks after 15 min"),
+                ),
+                (
+                    sysadminctl("delay is 5 seconds"),
+                    "unset",
+                    pmset(10, 5).as_str(),
+                    Some(false),
+                    Some("On battery: locks after 10 min 5 s"),
+                ),
+                (
+                    sysadminctl("delay is 900 seconds"),
+                    "60",
+                    desktop,
+                    Some(false),
+                    Some("Plugged in: locks after 16 min"),
+                ),
+                (
+                    sysadminctl("is off"),
+                    "60",
+                    desktop,
+                    Some(false),
+                    Some("No password after the screen saver or display sleep"),
+                ),
+                (
+                    parse_screen_lock_status("usage: sysadminctl"),
+                    "60",
+                    desktop,
+                    None,
+                    Some("Lock settings unavailable"),
+                ),
+                // An unread screen saver might lock in time.
+                (now, "", desktop, None, Some("Lock settings unavailable")),
+                (now, "1200", "", None, Some("Lock settings unavailable")),
+            ] {
+                assert_eq!(
+                    check(password, saver, displays),
+                    (pass, detail.map(str::to_string)),
+                    "{password:?} {saver:?} {displays:?}"
+                );
+            }
         }
 
         const SOFTWARE_UPDATE_DOMAIN: &str = "{\n    AutomaticDownload = 1;\n    AutomaticallyInstallMacOSUpdates = 1;\n    CriticalUpdateInstall = 1;\n    DDMPersistedErrorKey =     {\n        AutomaticCheckEnabled = 0;\n    };\n    LastRecommendedUpdatesAvailable = 1;\n}\n";
