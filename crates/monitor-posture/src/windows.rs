@@ -12,7 +12,8 @@
 //! - "gatekeeper": Windows SmartScreen for apps and files (policy first,
 //!   then the Explorer setting)
 //! - screen lock: any of — an inactivity-lock policy, a secure screensaver,
-//!   or "require sign-in on wake" with a sleep timeout — within 15 minutes
+//!   or "require sign-in on wake" with a sleep timeout — within 10 minutes;
+//!   the sleep route must hold on battery too when the PC has one
 //! - OS update: pending software updates from the Windows Update cache
 //!   (offline search, no network) plus the OS build for the detail line
 //! - automatic updates: the `NoAutoUpdate` machine policy and the Windows
@@ -29,10 +30,7 @@
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 
-use crate::{PostureCheckId, PostureCheckResult};
-
-/// Lock must engage within this many seconds of inactivity to pass.
-pub const SCREEN_LOCK_MAX_SECS: u64 = 900;
+use crate::{PostureCheckId, PostureCheckResult, SCREEN_LOCK_MAX_SECS};
 
 /// The probe. `$ErrorActionPreference` keeps a single failing signal from
 /// taking the others down; every key is optional on the parsing side. The
@@ -57,6 +55,7 @@ try {
 try { $r.inactivity = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name InactivityTimeoutSecs).InactivityTimeoutSecs } catch { $r.inactivity = $null }
 try { $r.consolelock = (powercfg /q SCHEME_CURRENT SUB_NONE CONSOLELOCK) -join "`n" } catch { $r.consolelock = $null }
 try { $r.standby = (powercfg /q SCHEME_CURRENT SUB_SLEEP STANDBYIDLE) -join "`n" } catch { $r.standby = $null }
+try { $r.battery = @(Get-CimInstance -ClassName Win32_Battery -ErrorAction Stop).Count -gt 0 } catch { $r.battery = $null }
 try {
   $nt = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
   $r.os = @{ display = [string]$nt.DisplayVersion; build = [string]$nt.CurrentBuild; ubr = [string]$nt.UBR }
@@ -109,15 +108,29 @@ pub fn as_bool(value: &Value) -> Option<bool> {
     }
 }
 
+/// A setting's value plugged in (AC) and on battery (DC).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct PerPowerSource<T> {
+    pub plugged_in: T,
+    pub on_battery: T,
+}
+
 /// `powercfg /q` prints the current setting as
-/// `Current AC Power Setting Index: 0x0000003c`; this returns that value.
-pub fn parse_powercfg_ac_index(output: &str) -> Option<u64> {
-    output
-        .lines()
-        .find(|line| line.contains("Current AC Power Setting Index"))
-        .and_then(|line| line.rsplit(':').next())
-        .map(str::trim)
-        .and_then(|hex| u64::from_str_radix(hex.trim_start_matches("0x"), 16).ok())
+/// `Current AC Power Setting Index: 0x0000003c` (plugged in) and
+/// `Current DC Power Setting Index: 0x0000012c` (on battery).
+pub fn parse_powercfg_index(output: &str) -> PerPowerSource<Option<u64>> {
+    let index = |label: &str| {
+        output
+            .lines()
+            .find(|line| line.contains(label))
+            .and_then(|line| line.rsplit(':').next())
+            .map(str::trim)
+            .and_then(|hex| u64::from_str_radix(hex.trim_start_matches("0x"), 16).ok())
+    };
+    PerPowerSource {
+        plugged_in: index("Current AC Power Setting Index"),
+        on_battery: index("Current DC Power Setting Index"),
+    }
 }
 
 /// `System.Volume.BitLockerProtection`: 1 on, 2 off, 3 encrypting,
@@ -295,8 +308,11 @@ struct ScreenLockSignals {
     screensaver_active: Option<bool>,
     screensaver_secure: Option<bool>,
     screensaver_timeout_secs: Option<u64>,
-    console_lock_on_wake: Option<bool>,
-    standby_ac_secs: Option<u64>,
+    /// "Require a password on wakeup" (`CONSOLELOCK`, 1 = yes).
+    console_lock_on_wake: PerPowerSource<Option<u64>>,
+    /// "Sleep after" (`STANDBYIDLE`, seconds, 0 = never).
+    standby_secs: PerPowerSource<Option<u64>>,
+    has_battery: Option<bool>,
 }
 
 impl ScreenLockSignals {
@@ -306,24 +322,39 @@ impl ScreenLockSignals {
         let saver_ok = self.screensaver_active == Some(true)
             && self.screensaver_secure == Some(true)
             && within(self.screensaver_timeout_secs);
-        let sleep_ok = self.console_lock_on_wake == Some(true) && within(self.standby_ac_secs);
-        if policy_ok || saver_ok || sleep_ok {
+        if policy_ok || saver_ok {
             return (Some(true), None);
+        }
+        let sleep_locks =
+            |lock: Option<u64>, standby: Option<u64>| lock == Some(1) && within(standby);
+        let plugged_in = sleep_locks(
+            self.console_lock_on_wake.plugged_in,
+            self.standby_secs.plugged_in,
+        );
+        let on_battery = sleep_locks(
+            self.console_lock_on_wake.on_battery,
+            self.standby_secs.on_battery,
+        );
+        let no_lock = |when: &str| {
+            Some(format!(
+                "No lock within {} min{when} (policy, screensaver, or sleep + sign-in)",
+                SCREEN_LOCK_MAX_SECS / 60
+            ))
+        };
+        match (plugged_in, on_battery, self.has_battery) {
+            (true, true, _) | (true, false, Some(false)) => return (Some(true), None),
+            (true, false, Some(true)) => return (Some(false), no_lock(" on battery")),
+            (true, false, None) => return (None, Some("Battery status unavailable".into())),
+            (false, _, _) => {}
         }
         let any_signal = self.inactivity_policy_secs.is_some()
             || self.screensaver_active.is_some()
-            || self.console_lock_on_wake.is_some()
-            || self.standby_ac_secs.is_some();
+            || self.console_lock_on_wake.plugged_in.is_some()
+            || self.standby_secs.plugged_in.is_some();
         if !any_signal {
             return (None, Some("Lock settings unavailable".into()));
         }
-        (
-            Some(false),
-            Some(format!(
-                "No lock within {} min (policy, screensaver, or sleep + sign-in)",
-                SCREEN_LOCK_MAX_SECS / 60
-            )),
-        )
+        (Some(false), no_lock(""))
     }
 }
 
@@ -373,11 +404,13 @@ pub fn parse_posture_json(json: &str, now: DateTime<Utc>) -> Vec<PostureCheckRes
             .and_then(|v| u64::try_from(v).ok()),
         console_lock_on_wake: get("consolelock")
             .and_then(Value::as_str)
-            .and_then(parse_powercfg_ac_index)
-            .map(|v| v == 1),
-        standby_ac_secs: get("standby")
+            .map(parse_powercfg_index)
+            .unwrap_or_default(),
+        standby_secs: get("standby")
             .and_then(Value::as_str)
-            .and_then(parse_powercfg_ac_index),
+            .map(parse_powercfg_index)
+            .unwrap_or_default(),
+        has_battery: get("battery").and_then(as_bool),
     };
     let (lock_pass, lock_detail) = signals.evaluate();
 
@@ -584,9 +617,16 @@ mod tests {
 
     #[test]
     fn powercfg_index_parses_hex() {
-        assert_eq!(parse_powercfg_ac_index(POWERCFG_ON), Some(1));
-        assert_eq!(parse_powercfg_ac_index(POWERCFG_SLEEP_10MIN), Some(600));
-        assert_eq!(parse_powercfg_ac_index("garbage"), None);
+        let index = |plugged_in, on_battery| PerPowerSource {
+            plugged_in,
+            on_battery,
+        };
+        assert_eq!(parse_powercfg_index(POWERCFG_ON), index(Some(1), Some(1)));
+        assert_eq!(
+            parse_powercfg_index(POWERCFG_SLEEP_10MIN),
+            index(Some(600), Some(300))
+        );
+        assert_eq!(parse_powercfg_index("garbage"), index(None, None));
     }
 
     /// `whoami /groups /fo csv /nh`, joined: a standard user, and an
@@ -657,47 +697,77 @@ mod tests {
         );
         let lock = by_id(&results, PostureCheckId::ScreenLock);
         assert_eq!(lock.pass, Some(false));
-        assert!(lock.detail.as_deref().unwrap().contains("15 min"));
+        assert!(lock.detail.as_deref().unwrap().contains("10 min"));
         let update = by_id(&results, PostureCheckId::OsUpdate);
         assert_eq!(update.pass, Some(false));
         assert_eq!(update.detail.as_deref(), Some("3 update(s) pending"));
     }
 
+    /// `powercfg /q` for one setting: `plugged_in` and `on_battery` are the
+    /// AC and DC values.
+    fn powercfg(plugged_in: u64, on_battery: u64) -> String {
+        format!(
+            "      Current AC Power Setting Index: {plugged_in:#010x}\n      Current DC Power Setting Index: {on_battery:#010x}\n"
+        )
+    }
+
     #[test]
-    fn policy_lock_and_secure_screensaver_each_pass() {
-        let policy = serde_json::json!({"inactivity": 300}).to_string();
-        assert_eq!(
-            by_id(
-                &parse_posture_json(&policy, now()),
-                PostureCheckId::ScreenLock
-            )
-            .pass,
-            Some(true)
-        );
-        let saver = serde_json::json!({
-            "screensaver": {"active": "1", "secure": "1", "timeout": "300"}
-        })
-        .to_string();
-        assert_eq!(
-            by_id(
-                &parse_posture_json(&saver, now()),
-                PostureCheckId::ScreenLock
-            )
-            .pass,
-            Some(true)
-        );
-        let slow_saver = serde_json::json!({
-            "screensaver": {"active": "1", "secure": "1", "timeout": "3600"}
-        })
-        .to_string();
-        assert_eq!(
-            by_id(
-                &parse_posture_json(&slow_saver, now()),
-                PostureCheckId::ScreenLock
-            )
-            .pass,
-            Some(false)
-        );
+    fn screen_lock_within_ten_minutes() {
+        use serde_json::json;
+        let saver = |timeout: &str| json!({"active": "1", "secure": "1", "timeout": timeout});
+        let no_lock = Some("No lock within 10 min (policy, screensaver, or sleep + sign-in)");
+        // (probe signals, pass, detail)
+        for (signals, pass, detail) in [
+            (json!({"inactivity": 600}), Some(true), None),
+            (json!({"inactivity": 900}), Some(false), no_lock),
+            (json!({"screensaver": saver("300")}), Some(true), None),
+            (json!({"screensaver": saver("900")}), Some(false), no_lock),
+            // An unsecured screen saver does not lock.
+            (
+                json!({"screensaver": {"active": "1", "secure": "0", "timeout": "300"}}),
+                Some(false),
+                no_lock,
+            ),
+            // Sleep with sign-in on wake: plugged in and, on a laptop, on battery.
+            (
+                json!({"consolelock": powercfg(1, 1), "standby": powercfg(300, 600), "battery": true}),
+                Some(true),
+                None,
+            ),
+            (
+                json!({"consolelock": powercfg(1, 1), "standby": powercfg(600, 900), "battery": true}),
+                Some(false),
+                Some("No lock within 10 min on battery (policy, screensaver, or sleep + sign-in)"),
+            ),
+            (
+                json!({"consolelock": powercfg(1, 1), "standby": powercfg(600, 900), "battery": false}),
+                Some(true),
+                None,
+            ),
+            (
+                json!({"consolelock": powercfg(1, 1), "standby": powercfg(600, 900)}),
+                None,
+                Some("Battery status unavailable"),
+            ),
+            (
+                json!({"consolelock": powercfg(1, 1), "standby": powercfg(900, 300), "battery": true}),
+                Some(false),
+                no_lock,
+            ),
+            (
+                json!({"consolelock": powercfg(0, 1), "standby": powercfg(300, 300), "battery": false}),
+                Some(false),
+                no_lock,
+            ),
+        ] {
+            let results = parse_posture_json(&signals.to_string(), now());
+            let lock = by_id(&results, PostureCheckId::ScreenLock);
+            assert_eq!(
+                (lock.pass, lock.detail.as_deref()),
+                (pass, detail),
+                "{signals}"
+            );
+        }
     }
 
     #[test]
